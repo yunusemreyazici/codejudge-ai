@@ -2,7 +2,7 @@
 
 ## Scope and threat model
 
-Phase 2 assumes submitted Python is actively malicious. A candidate may loop forever, allocate
+Phase 3 assumes submitted Python is actively malicious. A candidate may loop forever, allocate
 memory, emit unlimited output, spawn processes, inspect its environment, write files, access task
 tests, attempt network connections, or probe host resources.
 
@@ -11,6 +11,16 @@ new, restricted container. Docker is not a perfect security boundary. The Docker
 runtime, and host kernel remain trusted. Kernel or runtime escapes, denial of service against the
 Docker daemon, side channels, and vulnerabilities in Python or pytest are outside Phase 2's
 protection.
+
+Static analysis is a separate process-only path and does not weaken the Docker boundary. Ruff,
+mypy, Bandit, and Radon receive a disposable directory containing only the exact `solution.py`.
+The API process never imports, evaluates, or executes candidate source for analysis. Analyzer
+commands use fixed argument arrays, a minimal non-secret environment, explicit per-tool timeouts,
+and bounded combined output capture. The mypy adapter uses a packaged configuration, disables
+site-package discovery and followed imports, and never loads candidate configuration or plugins.
+Analyzer processes remain trusted dependencies; parser vulnerabilities in those tools are a
+remaining risk and should be addressed through dependency updates and stronger process isolation
+in production deployments.
 
 Systems evaluating highly hostile public code should consider stronger isolation layers such as
 gVisor, Kata Containers, or microVMs such as Firecracker in addition to the controls implemented

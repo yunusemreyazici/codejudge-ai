@@ -2,9 +2,9 @@
 
 > A production-oriented evaluation framework for testing and scoring AI-generated code.
 
-CodeJudge AI is an open-source backend for reproducible code evaluation. Phase 2 adds a restricted
-Docker execution backend while preserving the deterministic task, scoring, finding, and FastAPI
-architecture established in Phase 1.
+CodeJudge AI is an open-source backend for reproducible code evaluation. Phase 3 combines the
+restricted Docker execution path with deterministic Ruff, mypy, Bandit, and cyclomatic-complexity
+analysis while keeping execution and static analysis behind separate typed abstractions.
 
 > [!CAUTION]
 > Docker materially strengthens isolation, but it is **not a perfect security boundary**. The
@@ -15,13 +15,14 @@ architecture established in Phase 1.
 ## Overview
 
 The service accepts a task ID, language, and candidate source code. The evaluation engine resolves
-the task and dispatches it through the configured runner. In the recommended Docker mode, each
-submission gets a uniquely named, disposable container with explicit network, filesystem,
-privilege, process, CPU, memory, time, and output restrictions. The runner returns only structured
-domain data to the engine, which computes deterministic correctness.
+the task, dispatches it through the configured runner, and separately passes the exact immutable
+source to a static-analysis engine. In the recommended Docker mode, execution gets a uniquely
+named, disposable container with explicit network, filesystem, privilege, process, CPU, memory,
+time, and output restrictions. Static analyzers parse the single temporary `solution.py`; they do
+not import or execute it.
 
-The same candidate, task version, and test suite produce the same correctness result. No LLM is
-required or consulted.
+The same candidate, task version, test suite, tool versions, and scoring policy produce the same
+result. No LLM is required or consulted.
 
 ## Why this project exists
 
@@ -44,7 +45,12 @@ Implemented:
   `no-new-privileges`
 - Structured test results plus syntax, testing, resource, timeout, and sandbox findings
 - Explicit capability detection and HTTP `503` when the configured backend is unavailable
-- Deterministic correctness scoring (`passed / total * 100`)
+- Ruff code-quality findings using the documented `E`, `F`, `B`, `UP`, and `SIM` rule families
+- mypy type-safety findings with a trusted configuration and no candidate plugin/config loading
+- Bandit security heuristics with severity and confidence mapping
+- Radon cyclomatic-complexity maximum and average metrics
+- Deterministic five-dimensional weighted scoring with correctness derived only from tests
+- Per-analyzer timeouts, bounded output capture, minimal environments, and temporary cleanup
 - Unit, HTTP integration, and Docker security tests with GitHub Actions CI
 
 Planned features are listed in the roadmap and are not part of the current implementation.
@@ -52,36 +58,25 @@ Planned features are listed in the roadmap and are not part of the current imple
 ## Architecture
 
 ```text
-Client
-  │
-  ▼
-FastAPI routes ──────────────► task registry
-  │                                │ public task + internal test path
-  ▼                                │
-EvaluationEngine ◄─────────────────┘
-  │ runner-independent orchestration
-  ▼
-CodeRunner protocol
-  ├── PythonRunner (explicit local development mode)
-  └── DockerPythonRunner
-        │ Docker CLI argument arrays
-        ▼
-      ┌─────────────────────────────────────┐
-      │ disposable evaluation container     │
-      │ non-root · network=none             │
-      │ memory · CPU · PID limits           │
-      │ read-only root · bounded /tmp       │
-      │ cap-drop=ALL · no-new-privileges    │
-      │ pytest + structured report          │
-      └─────────────────────────────────────┘
-        │
-        ▼
-RunnerResult ──► findings + deterministic scoring ──► EvaluationResult
+                    EvaluationEngine
+                       /         \
+                      /           \
+              CodeRunner       StaticAnalysisEngine
+                  |             /    |     |      \
+          DockerPythonRunner  Ruff  mypy  Bandit  Radon
+                  \             \    |     |      /
+                   \             normalized findings
+                    \                 /
+                     Score Engine
+                          |
+                  EvaluationResult
 ```
 
-The engine does not know whether execution is local or containerized. Docker lifecycle, CLI,
-mount, metadata inspection, bounded stream capture, and cleanup behavior remain in the runner
-infrastructure layer. Test source and host paths never appear in public task response models.
+The two paths are deliberately sequential in Phase 3 so infrastructure failure handling remains
+simple and deterministic. The engine does not know whether execution is local or containerized.
+Docker lifecycle details stay in the runner layer; analyzer command and parsing details stay in
+the analysis layer. Routes only translate HTTP data, and test source, host paths, analyzer
+workspaces, and raw tool output never appear in public models.
 
 ## Quick Start
 
@@ -163,6 +158,9 @@ and temporary directory are **not** a sandbox. Never use this backend for untrus
 | `SANDBOX_PIDS_LIMIT` | `64` | Container process ceiling |
 | `SANDBOX_TIMEOUT_SECONDS` | `5.0` | Global Docker runtime ceiling |
 | `SANDBOX_OUTPUT_LIMIT_BYTES` | `1048576` | Combined retained stdout/stderr bytes |
+| `STATIC_ANALYSIS_ENABLED` | `true` | Enable deterministic Phase 3 analysis |
+| `STATIC_ANALYSIS_TIMEOUT_SECONDS` | `5.0` | Per-analyzer process timeout |
+| `STATIC_ANALYSIS_OUTPUT_LIMIT_BYTES` | `262144` | Per-analyzer combined output limit |
 
 The enforced Docker timeout is the smaller of the task timeout and
 `SANDBOX_TIMEOUT_SECONDS`.
@@ -208,13 +206,69 @@ events return structured evaluation data rather than internal stack traces.
     "duration_seconds": 0.72,
     "timed_out": false
   },
-  "score_breakdown": {"correctness": 100.0},
+  "score_breakdown": {
+    "correctness": 100.0,
+    "code_quality": 100.0,
+    "type_safety": 100.0,
+    "security": 100.0,
+    "complexity": 100.0
+  },
+  "analysis": {
+    "findings": [],
+    "complexity": {
+      "maximum": 3,
+      "average": 2.0,
+      "blocks": 4,
+      "analyzable": true
+    }
+  },
   "findings": []
 }
 ```
 
-Only correctness is measured. Code quality, performance, type safety, security review, and LLM
-review are not fabricated.
+Top-level `findings` contains execution/test/sandbox outcomes. `analysis.findings` contains static
+tool findings once, with tool, code, severity, category, location, fixability, and confidence where
+the analyzer supplies them.
+
+## Static Analysis
+
+- **Ruff → code quality.** Runs isolated from repository/candidate config with `E`, `F`, `B`, `UP`,
+  and `SIM`. `E`/`F` findings are errors, `B` warnings, and `UP`/`SIM` informational findings.
+- **mypy → type safety.** Uses the packaged `app/analysis/mypy.ini`, skips followed imports and site
+  packages, and does not require annotations. Candidate config and arbitrary plugins are not
+  loaded.
+- **Bandit → security heuristics.** Maps LOW/MEDIUM/HIGH severity and confidence into deterministic
+  findings. Candidate `# nosec` suppression is ignored for scoring consistency.
+- **Radon → cyclomatic complexity.** Measures functions, methods, classes, and nested closures and
+  publishes maximum, average, and block count.
+
+Each tool receives only a disposable directory containing the exact UTF-8 `solution.py`. Commands
+use argument arrays rather than a shell, inherit no host environment secrets, have a five-second
+default timeout, and share a bounded stdout/stderr capture per invocation. Missing tools,
+timeouts, malformed/truncated output, and unexpected crashes are infrastructure failures; the API
+returns `503` rather than silently awarding 100. Candidate parse errors remain ordinary findings.
+
+Static analysis does not execute candidate source and cannot prove correctness. Bandit cannot
+prove security, mypy cannot prove runtime safety, and cyclomatic complexity is only one
+maintainability signal.
+
+## Scoring Policy
+
+Correctness remains `passed / total * 100` and is never changed by a static tool. The final score
+is `correctness × 0.60 + code quality × 0.15 + type safety × 0.10 + security × 0.10 + complexity ×
+0.05`, rounded to two decimals.
+
+- Code quality starts at 100 and deducts 10/5/2 for error/warning/info findings.
+- Type safety starts at 100 and deducts 8/4/0 for error/warning/info findings. Missing annotations
+  are allowed by policy.
+- Security deducts 25/10/3 for error/warning/info severity, multiplied by 0.5/0.75/1.0 for
+  low/medium/high confidence.
+- Complexity uses maximum cyclomatic complexity: 1–5 → 100, 6–10 → 90, 11–15 → 70, 16–20 → 50,
+  and above 20 → 25. Source that cannot be parsed receives 0 for this dimension.
+
+Every dimension is clamped to 0–100. Set `STATIC_ANALYSIS_ENABLED=false` only when an explicit
+correctness-only legacy evaluation is desired; this omits unavailable dimensions rather than
+fabricating perfect values.
 
 ## Security Warning
 
@@ -230,7 +284,7 @@ handling, Docker daemon boundary, and remaining risks.
 
 - **Phase 1 — Core evaluator (implemented):** API, local runner, pytest, scoring, and findings
 - **Phase 2 — Docker sandbox (implemented):** restricted containers and security tests
-- **Phase 3 — Static analysis (planned):** typed quality and security findings
+- **Phase 3 — Static analysis (implemented):** Ruff, mypy, Bandit, complexity, and weighted scoring
 - **Phase 4 — PostgreSQL persistence (planned):** tasks, submissions, and evaluation history
 - **Phase 5 — Redis + distributed workers (planned):** durable asynchronous workloads
 - **Phase 6 — LLM judge + adversarial tests (planned):** complementary model review

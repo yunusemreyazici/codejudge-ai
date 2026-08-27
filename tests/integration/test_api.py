@@ -1,3 +1,5 @@
+from typing import Any
+
 from httpx import ASGITransport, AsyncClient
 
 from app.core.config import ExecutionBackend, Settings
@@ -74,6 +76,15 @@ async def test_successful_lru_evaluation(client: AsyncClient, correct_lru: str) 
     assert body["status"] == "completed"
     assert body["score"] == 100.0
     assert body["tests"]["passed"] == 8
+    assert body["score_breakdown"] == {
+        "correctness": 100.0,
+        "code_quality": 100.0,
+        "type_safety": 100.0,
+        "security": 100.0,
+        "complexity": 100.0,
+    }
+    assert body["analysis"]["findings"] == []
+    assert body["analysis"]["complexity"]["maximum"] <= 5
     assert body["findings"] == []
 
 
@@ -89,6 +100,40 @@ async def test_failing_lru_evaluation(client: AsyncClient, incorrect_lru: str) -
     assert 0 < body["score"] < 100
     assert body["tests"]["failed"] > 0
     assert body["findings"][0]["category"] == "testing"
+
+
+async def test_lru_static_analysis_variants_are_deterministic(
+    client: AsyncClient,
+    incorrect_lru: str,
+    poor_quality_lru: str,
+    security_smelly_lru: str,
+    type_incorrect_lru: str,
+    high_complexity_lru: str,
+) -> None:
+    sources = {
+        "incorrect": incorrect_lru,
+        "quality": poor_quality_lru,
+        "security": security_smelly_lru,
+        "typing": type_incorrect_lru,
+        "complexity": high_complexity_lru,
+    }
+    results: dict[str, Any] = {}
+    for name, source in sources.items():
+        response = await client.post(
+            "/api/v1/evaluations",
+            json={"task_id": "lru-cache", "language": "python", "code": source},
+        )
+        assert response.status_code == 200
+        results[name] = response.json()
+
+    assert results["incorrect"]["score_breakdown"]["correctness"] < 100
+    for name in ("quality", "security", "typing", "complexity"):
+        assert results[name]["score_breakdown"]["correctness"] == 100
+        assert results[name]["score"] > results["incorrect"]["score"]
+    assert results["quality"]["score_breakdown"]["code_quality"] < 100
+    assert results["security"]["score_breakdown"]["security"] < 100
+    assert results["typing"]["score_breakdown"]["type_safety"] < 100
+    assert results["complexity"]["score_breakdown"]["complexity"] == 70
 
 
 async def test_unknown_task(client: AsyncClient) -> None:
@@ -135,7 +180,8 @@ async def test_syntax_error_is_a_structured_evaluation(client: AsyncClient) -> N
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "completed"
-    assert body["score"] == 0
+    assert body["score_breakdown"]["correctness"] == 0
+    assert body["score"] < 40
     assert body["findings"][0] == {
         "severity": "error",
         "category": "execution",

@@ -18,6 +18,9 @@ DEFAULT_SANDBOX_CPUS = 0.5
 DEFAULT_SANDBOX_PIDS_LIMIT = 64
 DEFAULT_SANDBOX_TIMEOUT_SECONDS = 5.0
 DEFAULT_SANDBOX_OUTPUT_LIMIT_BYTES = 1024 * 1024
+DEFAULT_STATIC_ANALYSIS_ENABLED = True
+DEFAULT_STATIC_ANALYSIS_TIMEOUT_SECONDS = 5.0
+DEFAULT_STATIC_ANALYSIS_OUTPUT_LIMIT_BYTES = 256 * 1024
 
 
 class ExecutionBackend(StrEnum):
@@ -48,6 +51,18 @@ def _positive_int(name: str, default: int) -> int:
     return value
 
 
+def _boolean(name: str, default: bool) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    normalized = raw_value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean value")
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     """Runtime settings with safe local-development defaults."""
@@ -64,6 +79,9 @@ class Settings:
     sandbox_pids_limit: int = DEFAULT_SANDBOX_PIDS_LIMIT
     sandbox_timeout_seconds: float = DEFAULT_SANDBOX_TIMEOUT_SECONDS
     sandbox_output_limit_bytes: int = DEFAULT_SANDBOX_OUTPUT_LIMIT_BYTES
+    static_analysis_enabled: bool = DEFAULT_STATIC_ANALYSIS_ENABLED
+    static_analysis_timeout_seconds: float = DEFAULT_STATIC_ANALYSIS_TIMEOUT_SECONDS
+    static_analysis_output_limit_bytes: int = DEFAULT_STATIC_ANALYSIS_OUTPUT_LIMIT_BYTES
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -88,5 +106,15 @@ class Settings:
             ),
             sandbox_output_limit_bytes=_positive_int(
                 "SANDBOX_OUTPUT_LIMIT_BYTES", DEFAULT_SANDBOX_OUTPUT_LIMIT_BYTES
+            ),
+            static_analysis_enabled=_boolean(
+                "STATIC_ANALYSIS_ENABLED", DEFAULT_STATIC_ANALYSIS_ENABLED
+            ),
+            static_analysis_timeout_seconds=_positive_float(
+                "STATIC_ANALYSIS_TIMEOUT_SECONDS", DEFAULT_STATIC_ANALYSIS_TIMEOUT_SECONDS
+            ),
+            static_analysis_output_limit_bytes=_positive_int(
+                "STATIC_ANALYSIS_OUTPUT_LIMIT_BYTES",
+                DEFAULT_STATIC_ANALYSIS_OUTPUT_LIMIT_BYTES,
             ),
         )

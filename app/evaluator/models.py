@@ -24,6 +24,23 @@ class FindingCategory(StrEnum):
     TESTING = "testing"
     RESOURCE = "resource"
     SANDBOX = "sandbox"
+    QUALITY = "quality"
+    TYPE_SAFETY = "type_safety"
+    SECURITY = "security"
+    COMPLEXITY = "complexity"
+
+
+class AnalysisTool(StrEnum):
+    RUFF = "ruff"
+    MYPY = "mypy"
+    BANDIT = "bandit"
+    RADON = "radon"
+
+
+class FindingConfidence(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
 
 
 class Task(BaseModel):
@@ -73,10 +90,34 @@ class Finding(BaseModel):
     severity: FindingSeverity
     category: FindingCategory
     message: str
+    tool: AnalysisTool | None = None
+    code: str | None = None
+    line: int | None = Field(default=None, ge=1)
+    column: int | None = Field(default=None, ge=1)
+    end_line: int | None = Field(default=None, ge=1)
+    end_column: int | None = Field(default=None, ge=1)
+    fixable: bool | None = None
+    confidence: FindingConfidence | None = None
+
+
+class ComplexityMetrics(BaseModel):
+    maximum: int = Field(ge=0)
+    average: float = Field(ge=0)
+    blocks: int = Field(ge=0)
+    analyzable: bool = True
+
+
+class StaticAnalysisResult(BaseModel):
+    findings: list[Finding] = Field(default_factory=list)
+    complexity: ComplexityMetrics
 
 
 class ScoreBreakdown(BaseModel):
     correctness: float = Field(ge=0, le=100)
+    code_quality: float | None = Field(default=None, ge=0, le=100)
+    type_safety: float | None = Field(default=None, ge=0, le=100)
+    security: float | None = Field(default=None, ge=0, le=100)
+    complexity: float | None = Field(default=None, ge=0, le=100)
 
 
 class EvaluationResult(BaseModel):
@@ -85,6 +126,7 @@ class EvaluationResult(BaseModel):
     score: float = Field(ge=0, le=100)
     tests: TestResult
     score_breakdown: ScoreBreakdown
+    analysis: StaticAnalysisResult | None = None
     findings: list[Finding] = Field(default_factory=list)
 
 

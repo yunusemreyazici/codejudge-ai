@@ -14,7 +14,7 @@ from collections import OrderedDict
 class LRUCache:
     def __init__(self, capacity: int):
         self.capacity = capacity
-        self.values = OrderedDict()
+        self.values: OrderedDict[int, int] = OrderedDict()
 
     def get(self, key: int) -> int:
         if key not in self.values:
@@ -42,6 +42,42 @@ class LRUCache:
         self.values[key] = value
 """.lstrip()
 
+POOR_QUALITY_LRU = (
+    CORRECT_LRU
+    + """
+
+def _quality_smell():
+    unused = 1
+    return 2
+"""
+)
+
+SECURITY_SMELLY_LRU = (
+    CORRECT_LRU
+    + """
+
+def _unsafe(expression: str) -> object:
+    return eval(expression)
+"""
+)
+
+TYPE_INCORRECT_LRU = (
+    CORRECT_LRU
+    + """
+
+def _type_error() -> int:
+    value: int = "wrong"
+    return value
+"""
+)
+
+HIGH_COMPLEXITY_LRU = (
+    CORRECT_LRU
+    + "\ndef _complex(value: int) -> int:\n"
+    + "".join(f"    if value == {index}:\n        return {index}\n" for index in range(11))
+    + "    return -1\n"
+)
+
 
 @pytest_asyncio.fixture
 async def client() -> AsyncIterator[AsyncClient]:
@@ -63,3 +99,23 @@ def correct_lru() -> str:
 @pytest.fixture
 def incorrect_lru() -> str:
     return INCORRECT_LRU
+
+
+@pytest.fixture
+def poor_quality_lru() -> str:
+    return POOR_QUALITY_LRU
+
+
+@pytest.fixture
+def security_smelly_lru() -> str:
+    return SECURITY_SMELLY_LRU
+
+
+@pytest.fixture
+def type_incorrect_lru() -> str:
+    return TYPE_INCORRECT_LRU
+
+
+@pytest.fixture
+def high_complexity_lru() -> str:
+    return HIGH_COMPLEXITY_LRU

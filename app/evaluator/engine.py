@@ -6,6 +6,8 @@ import logging
 import time
 from collections.abc import Mapping
 
+from app.analysis.base import CandidateSource, StaticAnalysisProvider
+from app.analysis.engine import StaticAnalysisInfrastructureError
 from app.evaluator.findings import build_findings
 from app.evaluator.models import (
     EvaluationRequest,
@@ -14,7 +16,7 @@ from app.evaluator.models import (
     RunnerCapability,
     TestResult,
 )
-from app.evaluator.scoring import calculate_score
+from app.evaluator.scoring import calculate_final_score, calculate_score
 from app.runners.base import CodeRunner
 from app.tasks.registry import TaskRegistry
 
@@ -35,7 +37,7 @@ class CodeSizeExceededError(ValueError):
 
 
 class EvaluationInfrastructureError(RuntimeError):
-    """The configured runner could not provide its execution service."""
+    """Execution or static-analysis infrastructure could not provide its service."""
 
 
 class EvaluationEngine:
@@ -46,10 +48,12 @@ class EvaluationEngine:
         registry: TaskRegistry,
         runners: Mapping[str, CodeRunner],
         max_code_size: int,
+        analysis_engine: StaticAnalysisProvider | None = None,
     ) -> None:
         self._registry = registry
         self._runners = runners
         self._max_code_size = max_code_size
+        self._analysis_engine = analysis_engine
 
     async def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
         started_at = time.monotonic()
@@ -74,6 +78,21 @@ class EvaluationEngine:
                 runner_result.infrastructure_error,
             )
             raise EvaluationInfrastructureError(runner_result.infrastructure_error)
+
+        analysis = None
+        if self._analysis_engine is not None:
+            try:
+                analysis = await self._analysis_engine.analyze(
+                    CandidateSource(code=request.code, language=request.language)
+                )
+            except StaticAnalysisInfrastructureError as error:
+                logger.error(
+                    "static analysis infrastructure unavailable task_id=%s language=%s reason=%s",
+                    request.task_id,
+                    request.language,
+                    error,
+                )
+                raise EvaluationInfrastructureError(str(error)) from error
         tests = TestResult(
             passed=runner_result.passed,
             failed=runner_result.failed,
@@ -81,7 +100,7 @@ class EvaluationEngine:
             duration_seconds=runner_result.duration_seconds,
             timed_out=runner_result.timed_out,
         )
-        breakdown = calculate_score(tests)
+        breakdown = calculate_score(tests, analysis)
         status = (
             EvaluationStatus.FAILED
             if (
@@ -94,9 +113,10 @@ class EvaluationEngine:
         result = EvaluationResult(
             task_id=task.specification.id,
             status=status,
-            score=breakdown.correctness,
+            score=calculate_final_score(breakdown),
             tests=tests,
             score_breakdown=breakdown,
+            analysis=analysis,
             findings=build_findings(runner_result, task.specification.timeout_seconds),
         )
         logger.info(

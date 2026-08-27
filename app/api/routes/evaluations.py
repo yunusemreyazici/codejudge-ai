@@ -18,16 +18,17 @@ def create_router(engine: EvaluationEngine) -> APIRouter:
     @router.post(
         "",
         response_model=EvaluationResult,
+        response_model_exclude_none=True,
         summary="Evaluate a code submission",
         description=(
-            "Run a Python submission synchronously against a task's deterministic pytest suite "
-            "using the configured execution backend."
+            "Run a Python submission synchronously against deterministic tests and static "
+            "analysis using the configured execution backend."
         ),
         responses={
             status.HTTP_400_BAD_REQUEST: {"description": "Unsupported language"},
             status.HTTP_404_NOT_FOUND: {"description": "Task not found"},
             status.HTTP_503_SERVICE_UNAVAILABLE: {
-                "description": "Configured execution backend is unavailable"
+                "description": "Evaluation execution or analysis infrastructure is unavailable"
             },
             status.HTTP_422_UNPROCESSABLE_CONTENT: {
                 "description": "Invalid request or source code exceeds the configured limit"

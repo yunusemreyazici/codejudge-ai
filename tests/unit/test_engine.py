@@ -1,3 +1,5 @@
+from app.analysis.base import CandidateSource
+from app.analysis.engine import StaticAnalysisInfrastructureError
 from app.evaluator.engine import (
     CodeSizeExceededError,
     EvaluationEngine,
@@ -5,10 +7,12 @@ from app.evaluator.engine import (
     UnsupportedLanguageError,
 )
 from app.evaluator.models import (
+    ComplexityMetrics,
     EvaluationRequest,
     EvaluationStatus,
     RunnerCapability,
     RunnerResult,
+    StaticAnalysisResult,
 )
 from app.tasks.registry import RegisteredTask, TaskNotFoundError, TaskRegistry
 
@@ -24,6 +28,25 @@ class FakeRunner:
 
     async def check_capability(self) -> RunnerCapability:
         return RunnerCapability(backend="fake", available=True, detail="Available")
+
+
+class FakeAnalysisEngine:
+    def __init__(self, result: StaticAnalysisResult | Exception) -> None:
+        self.result = result
+        self.received_candidate: CandidateSource | None = None
+
+    async def analyze(self, candidate: CandidateSource) -> StaticAnalysisResult:
+        self.received_candidate = candidate
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+def _perfect_analysis() -> StaticAnalysisResult:
+    return StaticAnalysisResult(
+        findings=[],
+        complexity=ComplexityMetrics(maximum=1, average=1, blocks=1),
+    )
 
 
 async def test_engine_orchestrates_and_scores_runner_result() -> None:
@@ -49,6 +72,38 @@ async def test_engine_orchestrates_and_scores_runner_result() -> None:
     assert result.tests.passed == 6
     assert result.findings[0].message == "2 tests failed."
     assert runner.received_code == "class LRUCache: pass"
+
+
+async def test_engine_integrates_analysis_without_changing_correctness() -> None:
+    runner = FakeRunner(
+        RunnerResult(
+            exit_code=1,
+            stdout="",
+            stderr="",
+            duration_seconds=0.25,
+            passed=6,
+            failed=2,
+            total=8,
+        )
+    )
+    analysis_engine = FakeAnalysisEngine(_perfect_analysis())
+    engine = EvaluationEngine(
+        TaskRegistry.default(),
+        {"python": runner},
+        max_code_size=1000,
+        analysis_engine=analysis_engine,
+    )
+
+    result = await engine.evaluate(
+        EvaluationRequest(task_id="lru-cache", language="python", code="class LRUCache: pass")
+    )
+
+    assert result.score_breakdown.correctness == 75
+    assert result.score == 85
+    assert result.analysis == _perfect_analysis()
+    assert analysis_engine.received_candidate == CandidateSource(
+        code="class LRUCache: pass", language="python"
+    )
 
 
 async def test_engine_rejects_unknown_task() -> None:
@@ -133,6 +188,38 @@ async def test_engine_raises_infrastructure_error_instead_of_scoring_candidate()
         )
     except EvaluationInfrastructureError as error:
         assert str(error) == "Docker daemon is unavailable."
+    else:
+        raise AssertionError("EvaluationInfrastructureError was not raised")
+
+
+async def test_engine_raises_when_static_analyzer_infrastructure_fails() -> None:
+    runner = FakeRunner(
+        RunnerResult(
+            exit_code=0,
+            stdout="",
+            stderr="",
+            duration_seconds=0.01,
+            passed=8,
+            failed=0,
+            total=8,
+        )
+    )
+    analysis_engine = FakeAnalysisEngine(
+        StaticAnalysisInfrastructureError("Static analyzer 'ruff' timed out.")
+    )
+    engine = EvaluationEngine(
+        TaskRegistry.default(),
+        {"python": runner},
+        max_code_size=1000,
+        analysis_engine=analysis_engine,
+    )
+
+    try:
+        await engine.evaluate(
+            EvaluationRequest(task_id="lru-cache", language="python", code="pass")
+        )
+    except EvaluationInfrastructureError as error:
+        assert str(error) == "Static analyzer 'ruff' timed out."
     else:
         raise AssertionError("EvaluationInfrastructureError was not raised")
 
