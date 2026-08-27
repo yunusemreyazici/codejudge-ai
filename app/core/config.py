@@ -22,11 +22,22 @@ DEFAULT_STATIC_ANALYSIS_ENABLED = True
 DEFAULT_STATIC_ANALYSIS_TIMEOUT_SECONDS = 5.0
 DEFAULT_STATIC_ANALYSIS_OUTPUT_LIMIT_BYTES = 256 * 1024
 DEFAULT_PERSISTENCE_ENABLED = False
+DEFAULT_EVALUATION_MODE = "sync"
+DEFAULT_WORKER_CONCURRENCY = 1
+DEFAULT_WORKER_LEASE_SECONDS = 60.0
+DEFAULT_WORKER_MAX_ATTEMPTS = 3
+DEFAULT_OUTBOX_POLL_INTERVAL_SECONDS = 1.0
+DEFAULT_RETRY_BASE_DELAY_SECONDS = 5.0
 
 
 class ExecutionBackend(StrEnum):
     DOCKER = "docker"
     LOCAL = "local"
+
+
+class EvaluationMode(StrEnum):
+    SYNC = "sync"
+    ASYNC = "async"
 
 
 def _environment_value(name: str, default: str) -> str:
@@ -85,12 +96,36 @@ class Settings:
     static_analysis_output_limit_bytes: int = DEFAULT_STATIC_ANALYSIS_OUTPUT_LIMIT_BYTES
     persistence_enabled: bool = DEFAULT_PERSISTENCE_ENABLED
     database_url: str | None = None
+    evaluation_mode: EvaluationMode = EvaluationMode.SYNC
+    redis_url: str | None = None
+    worker_concurrency: int = DEFAULT_WORKER_CONCURRENCY
+    worker_lease_seconds: float = DEFAULT_WORKER_LEASE_SECONDS
+    worker_max_attempts: int = DEFAULT_WORKER_MAX_ATTEMPTS
+    outbox_poll_interval_seconds: float = DEFAULT_OUTBOX_POLL_INTERVAL_SECONDS
+    retry_base_delay_seconds: float = DEFAULT_RETRY_BASE_DELAY_SECONDS
 
     def __post_init__(self) -> None:
         if self.persistence_enabled and not self.database_url:
             raise ValueError("DATABASE_URL is required when persistence is enabled")
         if self.database_url and not self.database_url.startswith("postgresql+asyncpg://"):
             raise ValueError("DATABASE_URL must use postgresql+asyncpg")
+        if self.evaluation_mode is EvaluationMode.ASYNC:
+            if not self.persistence_enabled:
+                raise ValueError("PERSISTENCE_ENABLED must be true in async evaluation mode")
+            if not self.redis_url:
+                raise ValueError("REDIS_URL is required in async evaluation mode")
+        if self.redis_url and not self.redis_url.startswith(("redis://", "rediss://")):
+            raise ValueError("REDIS_URL must use redis or rediss")
+        if self.worker_concurrency <= 0:
+            raise ValueError("WORKER_CONCURRENCY must be greater than zero")
+        if self.worker_lease_seconds <= 0:
+            raise ValueError("WORKER_LEASE_SECONDS must be greater than zero")
+        if self.worker_max_attempts <= 0:
+            raise ValueError("WORKER_MAX_ATTEMPTS must be greater than zero")
+        if self.outbox_poll_interval_seconds <= 0:
+            raise ValueError("OUTBOX_POLL_INTERVAL_SECONDS must be greater than zero")
+        if self.retry_base_delay_seconds <= 0:
+            raise ValueError("RETRY_BASE_DELAY_SECONDS must be greater than zero")
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -99,6 +134,9 @@ class Settings:
         database_url = os.getenv("DATABASE_URL")
         if database_url is not None:
             database_url = database_url.strip() or None
+        redis_url = os.getenv("REDIS_URL")
+        if redis_url is not None:
+            redis_url = redis_url.strip() or None
         return cls(
             app_name=os.getenv("APP_NAME", DEFAULT_APP_NAME),
             app_env=os.getenv("APP_ENV", DEFAULT_APP_ENV),
@@ -132,4 +170,19 @@ class Settings:
             ),
             persistence_enabled=persistence_enabled,
             database_url=database_url,
+            evaluation_mode=EvaluationMode(
+                _environment_value("EVALUATION_MODE", DEFAULT_EVALUATION_MODE).lower()
+            ),
+            redis_url=redis_url,
+            worker_concurrency=_positive_int("WORKER_CONCURRENCY", DEFAULT_WORKER_CONCURRENCY),
+            worker_lease_seconds=_positive_float(
+                "WORKER_LEASE_SECONDS", DEFAULT_WORKER_LEASE_SECONDS
+            ),
+            worker_max_attempts=_positive_int("WORKER_MAX_ATTEMPTS", DEFAULT_WORKER_MAX_ATTEMPTS),
+            outbox_poll_interval_seconds=_positive_float(
+                "OUTBOX_POLL_INTERVAL_SECONDS", DEFAULT_OUTBOX_POLL_INTERVAL_SECONDS
+            ),
+            retry_base_delay_seconds=_positive_float(
+                "RETRY_BASE_DELAY_SECONDS", DEFAULT_RETRY_BASE_DELAY_SECONDS
+            ),
         )

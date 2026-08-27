@@ -11,13 +11,16 @@ from fastapi.responses import JSONResponse
 
 from app.analysis.factory import create_static_analysis_engine
 from app.api.router import create_api_router
-from app.core.config import Settings
+from app.core.config import EvaluationMode, Settings
 from app.core.logging import configure_logging
 from app.core.version import codejudge_version
 from app.db.repositories import EvaluationRepository, SqlAlchemyEvaluationRepository
 from app.db.session import Database
 from app.evaluator.engine import EvaluationEngine
 from app.evaluator.service import EvaluationService
+from app.jobs.repositories import EvaluationJobRepository, SqlAlchemyEvaluationJobRepository
+from app.jobs.service import EvaluationJobService
+from app.queue.redis_streams import EvaluationQueue, RedisStreamsQueue
 from app.runners.base import CodeRunner
 from app.runners.factory import create_python_runner
 from app.snapshots.metadata import ExecutionMetadataCollector, ExecutionMetadataProvider
@@ -31,6 +34,8 @@ def create_app(
     registry: TaskRegistry | None = None,
     python_runner: CodeRunner | None = None,
     evaluation_repository: EvaluationRepository | None = None,
+    job_repository: EvaluationJobRepository | None = None,
+    evaluation_queue: EvaluationQueue | None = None,
     execution_metadata: ExecutionMetadataProvider | None = None,
 ) -> FastAPI:
     resolved_settings = settings or Settings.from_env()
@@ -50,37 +55,81 @@ def create_app(
     )
     database: Database | None = None
     resolved_repository = evaluation_repository
-    if resolved_repository is None and resolved_settings.persistence_enabled:
+    resolved_job_repository = job_repository
+    needs_database = resolved_settings.persistence_enabled and (
+        resolved_repository is None
+        or (
+            resolved_settings.evaluation_mode is EvaluationMode.ASYNC
+            and resolved_job_repository is None
+        )
+    )
+    if needs_database:
         if resolved_settings.database_url is None:
             raise ValueError("DATABASE_URL is required when persistence is enabled")
         database = Database(resolved_settings.database_url)
+    if resolved_repository is None and database is not None:
         resolved_repository = SqlAlchemyEvaluationRepository(database.session_factory)
+    if (
+        resolved_job_repository is None
+        and resolved_settings.evaluation_mode is EvaluationMode.ASYNC
+        and database is not None
+    ):
+        resolved_job_repository = SqlAlchemyEvaluationJobRepository(database.session_factory)
     service = EvaluationService(
         engine=engine,
         execution_metadata=execution_metadata or ExecutionMetadataCollector(resolved_settings),
         repository=resolved_repository,
     )
+    resolved_queue = evaluation_queue
+    owns_queue = False
+    if resolved_settings.evaluation_mode is EvaluationMode.ASYNC and resolved_queue is None:
+        if resolved_settings.redis_url is None:
+            raise ValueError("REDIS_URL is required in async evaluation mode")
+        resolved_queue = RedisStreamsQueue(resolved_settings.redis_url)
+        owns_queue = True
+    job_service = None
+    if resolved_settings.evaluation_mode is EvaluationMode.ASYNC:
+        if resolved_job_repository is None or resolved_repository is None:
+            raise ValueError("Async evaluation mode requires PostgreSQL repositories")
+        job_service = EvaluationJobService(
+            service,
+            resolved_job_repository,
+            resolved_repository,
+            max_attempts=resolved_settings.worker_max_attempts,
+        )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         try:
             yield
         finally:
+            if owns_queue and resolved_queue is not None:
+                await resolved_queue.close()
             if database is not None:
                 await database.dispose()
 
     application = FastAPI(
         title=resolved_settings.app_name,
         version=codejudge_version(),
-        summary="Deterministic code evaluation with immutable history",
+        summary="Durable asynchronous code evaluation with immutable history",
         description=(
-            "CodeJudge AI Phase 4: deterministic execution and analysis with immutable, "
-            "reproducible PostgreSQL snapshots."
+            "CodeJudge AI Phase 5: durable PostgreSQL jobs, Redis Streams delivery, distributed "
+            "workers, and immutable reproducible terminal snapshots."
         ),
         lifespan=lifespan,
     )
-    application.include_router(create_api_router(resolved_registry, engine, service))
+    application.include_router(
+        create_api_router(
+            resolved_registry,
+            engine,
+            service,
+            job_service,
+            resolved_settings.evaluation_mode,
+            resolved_queue,
+        )
+    )
     application.state.database = database
+    application.state.evaluation_queue = resolved_queue
 
     @application.exception_handler(Exception)
     async def unexpected_error_handler(request: Request, error: Exception) -> JSONResponse:

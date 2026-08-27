@@ -17,9 +17,50 @@ from app.evaluator.models import (
     StaticAnalysisResult,
     TestResult,
 )
+from app.jobs.integrity import request_fingerprint
+from app.jobs.models import EvaluationJob, JobStatus
 from app.snapshots.builder import build_evaluation_snapshot
+from app.snapshots.fingerprints import source_identity, task_fingerprint, tests_fingerprint
 from app.snapshots.models import EvaluationSnapshot, ExecutionEnvironmentSnapshot
 from app.tasks.registry import TaskRegistry
+
+
+def job_fixture(
+    *,
+    source: str = "class LRUCache: pass\n",
+    created_at: datetime | None = None,
+    evaluation_id: UUID | None = None,
+    idempotency_key: str | None = None,
+    max_attempts: int = 3,
+) -> EvaluationJob:
+    now = created_at or datetime(2026, 8, 27, 10, tzinfo=UTC)
+    request = EvaluationRequest(task_id="lru-cache", language="python", code=source)
+    task = TaskRegistry.default().get("lru-cache")
+    source_hash, source_size = source_identity(source)
+    tests_hash = tests_fingerprint(task)
+    return EvaluationJob(
+        evaluation_id=evaluation_id or uuid4(),
+        created_at=now,
+        updated_at=now,
+        task_id=request.task_id,
+        task_version=task.specification.version,
+        task_fingerprint=task_fingerprint(task, tests_hash),
+        tests_fingerprint=tests_hash,
+        language=request.language,
+        source_text=source,
+        source_hash=source_hash,
+        source_size=source_size,
+        request_fingerprint=request_fingerprint(request),
+        idempotency_key=idempotency_key,
+        status=JobStatus.QUEUED,
+        attempt_count=0,
+        max_attempts=max_attempts,
+        queued_at=now,
+        expected_execution=ExecutionEnvironmentSnapshot(backend="local"),
+        expected_analyzer_versions={},
+        expected_scoring_policy_version="1",
+        expected_codejudge_version="0.5.0",
+    )
 
 
 def snapshot_fixture(

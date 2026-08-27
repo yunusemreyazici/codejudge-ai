@@ -2,9 +2,9 @@
 
 > A production-oriented evaluation framework for testing and scoring AI-generated code.
 
-CodeJudge AI is an open-source backend for reproducible code evaluation. Phase 4 combines the
-restricted Docker execution path and deterministic static analysis with immutable, queryable
-PostgreSQL snapshots that preserve how every stored result was produced.
+CodeJudge AI is an open-source backend for reproducible code evaluation. Phase 5 adds durable
+asynchronous jobs and distributed workers while retaining the restricted Docker execution path,
+deterministic analysis, and immutable PostgreSQL snapshots.
 
 > [!CAUTION]
 > Docker materially strengthens isolation, but it is **not a perfect security boundary**. The
@@ -56,50 +56,54 @@ Implemented:
 - Exact source hashes, task/test fingerprints, and reproducibility fingerprints
 - Stored analyzer, scoring-policy, application, and sandbox-image versions
 - Historical detail and filtered/paginated summary APIs that never rerun candidate code
-- Alembic migrations plus unit, PostgreSQL, HTTP, and Docker security tests in CI
+- Durable PostgreSQL job lifecycle and transactional outbox
+- Redis Streams consumer-group delivery with acknowledgements and stale-message reclaim
+- Worker leases, bounded retries, deterministic backoff, and stale-job recovery
+- Idempotent terminal completion and optional HTTP `Idempotency-Key` support
+- Alembic migrations plus unit, PostgreSQL, Redis, worker, and real Docker tests in CI
 
 Planned features are listed in the roadmap and are not part of the current implementation.
 
 ## Architecture
 
 ```text
-                         EvaluationEngine
-                         /              \
-                   CodeRunner      StaticAnalysisEngine
-                      |             /    |     |      \
-             DockerPythonRunner  Ruff  mypy  Bandit  Radon
-                         \              /
-                          Score Engine
-                              |
-                       EvaluationResult
-                              |
-                       Snapshot Builder
-                              |
-                    EvaluationRepository
-                              |
-                         PostgreSQL
+Client -> FastAPI -> PostgreSQL Job + Outbox -> Outbox Publisher -> Redis Stream
+                                                                    |
+                                                               Worker Pool
+                                                               /         \
+                                                        Docker Runner   Analysis
+                                                               \         /
+                                                                Score Engine
+                                                                     |
+                                                           Immutable Snapshot
+                                                                     |
+                                                                PostgreSQL
 ```
 
 Execution and analysis remain deliberately sequential so infrastructure failure handling stays
 simple and deterministic. The engine does not know whether execution is local or containerized,
-and neither runners nor analyzers know about PostgreSQL. `EvaluationService` coordinates the
-result, snapshot builder, and focused repository. Routes only translate HTTP data and never issue
-SQLAlchemy queries.
+and runners, analyzers, scoring, and snapshot construction know nothing about Redis. PostgreSQL is
+the lifecycle authority; Redis is only recoverable delivery infrastructure. Routes only translate
+HTTP data and never issue SQLAlchemy queries.
 
 ## Quick Start
 
-Python 3.13 or newer, Docker, and PostgreSQL 17 are required for the documented persistent setup.
+Python 3.13 or newer, Docker, PostgreSQL 17, and Redis 7 are required for asynchronous operation.
 
 ```bash
 git clone https://github.com/yunusemreyazici/codejudge-ai.git
 cd codejudge-ai
 
 uv sync --extra dev
-docker compose up -d postgres
+docker compose up -d postgres redis
 export PERSISTENCE_ENABLED=true
+export EVALUATION_MODE=async
 export DATABASE_URL=postgresql+asyncpg://codejudge:codejudge@127.0.0.1:5432/codejudge
+export REDIS_URL=redis://127.0.0.1:6379/0
 uv run alembic upgrade head
 docker build -t codejudge-python-sandbox:phase2 sandbox/
+uv run codejudge-worker
+# In another terminal with the same environment:
 uv run uvicorn app.main:app --reload
 ```
 
@@ -170,6 +174,13 @@ and temporary directory are **not** a sandbox. Never use this backend for untrus
 | `STATIC_ANALYSIS_OUTPUT_LIMIT_BYTES` | `262144` | Per-analyzer combined output limit |
 | `PERSISTENCE_ENABLED` | `false` | Require successful evaluations to be persisted |
 | `DATABASE_URL` | unset | Required `postgresql+asyncpg://` URL when persistence is enabled |
+| `EVALUATION_MODE` | `sync` | Explicit `sync` compatibility or production-oriented `async` mode |
+| `REDIS_URL` | unset | Required `redis://` or `rediss://` URL in async mode |
+| `WORKER_CONCURRENCY` | `1` | Concurrent worker consumer slots per process |
+| `WORKER_LEASE_SECONDS` | `60` | Renewable PostgreSQL claim lease |
+| `WORKER_MAX_ATTEMPTS` | `3` | Maximum infrastructure attempts |
+| `OUTBOX_POLL_INTERVAL_SECONDS` | `1` | Dispatcher and maintenance interval |
+| `RETRY_BASE_DELAY_SECONDS` | `5` | Backoff base; successive failed attempts yield 5, 15, then 45 seconds |
 
 The enforced Docker timeout is the smaller of the task timeout and
 `SANDBOX_TIMEOUT_SECONDS`.
@@ -181,11 +192,12 @@ The API includes:
 - `GET /health` — API process liveness
 - `GET /health/sandbox` — configured execution-backend capability
 - `GET /health/database` — database capability without changing liveness semantics
+- `GET /health/queue` — Redis capability and TTL-backed active worker count
 - `GET /api/v1/tasks` — public task specifications
 - `GET /api/v1/tasks/{task_id}` — one public task
-- `POST /api/v1/evaluations` — synchronous evaluation
-- `GET /api/v1/evaluations/{evaluation_id}` — full stored historical snapshot
-- `GET /api/v1/evaluations` — newest-first summaries with pagination and filters
+- `POST /api/v1/evaluations` — `202 queued` in async mode; synchronous compatibility otherwise
+- `GET /api/v1/evaluations/{evaluation_id}` — queued/running/retry/failed state or terminal snapshot
+- `GET /api/v1/evaluations` — lifecycle-aware newest-first summaries and historical snapshots
 
 Submit the included implementation:
 
@@ -203,6 +215,43 @@ python -c 'import json, pathlib; print(json.dumps({
 Unknown tasks return `404`, unsupported languages return `400`, invalid bodies return `422`, and
 an unavailable configured backend returns `503`. Candidate test, syntax, timeout, OOM, and output
 events return structured evaluation data rather than internal stack traces.
+
+## Asynchronous Evaluations
+
+With `EVALUATION_MODE=async`, POST validates the request, captures the expected source/task/test,
+analyzer, scoring-policy, application, and sandbox identities, and atomically inserts a queued job
+plus `evaluation.requested` outbox event. It returns `202 Accepted` immediately with the stable
+evaluation UUID and status URL. It does not execute candidate code or create an in-process
+background task.
+
+The worker process contains separate outbox-publisher and consumer loops. The publisher transfers
+ready outbox UUIDs to the `codejudge:evaluations` Redis Stream and marks publication only after
+`XADD` succeeds. A Redis outage leaves the PostgreSQL job queued and the event unpublished for
+durable retry; PostgreSQL failure causes the API to reject submission with a sanitized `503`.
+
+Delivery is deliberately **at least once**, not exactly once. Redis consumer groups retain
+unacknowledged messages, and `XAUTOCLAIM` lets another worker recover stale pending entries.
+Workers atomically claim jobs in PostgreSQL, set a renewable lease, and only ACK after a durable
+lifecycle transition. A duplicate delivery for a completed/failed UUID is ACKed without rerunning
+candidate code.
+
+Infrastructure failures allow three total attempts by default. The deterministic backoff function
+yields 5, 15, and 45 seconds for successive failures; with the default limit, retries are scheduled
+after the first two failures and the third failure is terminal. Candidate syntax errors, failed
+tests, timeouts, OOM events, and ordinary findings produce completed evaluation snapshots and are
+never queue retries. Expired worker leases move safely toward retry or terminal infrastructure
+failure. Snapshot insertion and `running -> completed` occur in one PostgreSQL transaction, so a
+crash after commit but before Redis ACK is harmless on redelivery.
+
+Clients may send a global `Idempotency-Key` header. Replaying the same key and canonical request
+returns the original UUID; reusing it for different task/language/source identity returns `409`.
+Without the header, identical submissions intentionally create distinct evaluations.
+
+Before execution, the worker hashes the exact stored source and compares the queued task version,
+task/test fingerprints, analyzer versions, scoring-policy version, CodeJudge version, and expected
+execution image identity with the current runtime. A mismatch becomes a non-retryable integrity
+failure rather than silently running changed evaluation material. Phase 5 does not support
+user-facing cancellation.
 
 ## Example Evaluation
 
@@ -346,7 +395,7 @@ handling, Docker daemon boundary, and remaining risks.
 - **Phase 2 — Docker sandbox (implemented):** restricted containers and security tests
 - **Phase 3 — Static analysis (implemented):** Ruff, mypy, Bandit, complexity, and weighted scoring
 - **Phase 4 — PostgreSQL persistence (implemented):** immutable reproducible evaluation snapshots
-- **Phase 5 — Redis + distributed workers (planned):** durable asynchronous workloads
+- **Phase 5 — Redis + distributed workers (implemented):** durable at-least-once asynchronous jobs
 - **Phase 6 — LLM judge + adversarial tests (planned):** complementary model review
 - **Phase 7 — Multi-model benchmark + leaderboard (planned):** model comparisons
 - **Phase 8 — Observability + production hardening (planned):** tracing, metrics, and operations
@@ -358,7 +407,7 @@ uv sync --extra dev
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy app
-uv run pytest -v -m "not sandbox and not database"
+uv run pytest -v -m "not sandbox and not database and not queue"
 ```
 
 Task definitions live under `app/tasks/definitions`. Their `.yaml` files use JSON syntax, a valid
@@ -367,13 +416,13 @@ YAML subset that keeps loading on the standard library. Add execution behavior t
 
 ## Testing
 
-The lightweight suite requires neither Docker nor PostgreSQL. Database tests require an explicitly
-named dedicated test database whose name ends in `_test`; fixtures reject other database names.
-Sandbox tests skip with an explicit capability reason when the daemon or image is unavailable.
+The lightweight suite requires no infrastructure. Database tests require an explicitly named
+dedicated database ending in `_test`; Redis tests require an explicit nonzero Redis database.
+Sandbox and worker E2E tests fail rather than skip when `CODEJUDGE_REQUIRE_DOCKER=1`.
 
 ```bash
 # Ordinary unit and HTTP integration tests
-uv run pytest -v -m "not sandbox and not database"
+uv run pytest -v -m "not sandbox and not database and not queue"
 
 # PostgreSQL tests (use a dedicated database whose name ends in `_test`)
 docker compose exec postgres createdb -U codejudge codejudge_test
@@ -381,9 +430,16 @@ export CODEJUDGE_TEST_DATABASE_URL=postgresql+asyncpg://codejudge:codejudge@127.
 DATABASE_URL="$CODEJUDGE_TEST_DATABASE_URL" uv run alembic upgrade head
 uv run pytest -v -m database tests/database
 
+# Real Redis Streams tests (use a dedicated nonzero database)
+export CODEJUDGE_TEST_REDIS_URL=redis://127.0.0.1:6379/15
+uv run pytest -v -m "queue and not worker_e2e" tests/queue
+
 # Docker integration tests (build the image first)
 make sandbox-build
 CODEJUDGE_REQUIRE_DOCKER=1 uv run pytest -v -m sandbox tests/sandbox
+
+# PostgreSQL + Redis + real Docker worker flow
+CODEJUDGE_REQUIRE_DOCKER=1 uv run pytest -v tests/queue/test_worker_e2e.py
 ```
 
 Docker tests verify successful and failing submissions, syntax errors, timeout, cleanup, network

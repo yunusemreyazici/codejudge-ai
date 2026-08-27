@@ -5,9 +5,11 @@ from typing import Literal
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from app.core.config import EvaluationMode
 from app.evaluator.engine import EvaluationEngine
 from app.evaluator.models import RunnerCapability
 from app.evaluator.service import EvaluationService
+from app.queue.redis_streams import EvaluationQueue, QueueUnavailableError
 
 
 class HealthResponse(BaseModel):
@@ -20,7 +22,19 @@ class DatabaseCapability(BaseModel):
     detail: str
 
 
-def create_router(engine: EvaluationEngine, service: EvaluationService) -> APIRouter:
+class QueueCapability(BaseModel):
+    configured: bool
+    available: bool
+    active_workers: int
+    detail: str
+
+
+def create_router(
+    engine: EvaluationEngine,
+    service: EvaluationService,
+    queue: EvaluationQueue | None,
+    evaluation_mode: EvaluationMode,
+) -> APIRouter:
     router = APIRouter(tags=["health"])
 
     @router.get(
@@ -58,6 +72,33 @@ def create_router(engine: EvaluationEngine, service: EvaluationService) -> APIRo
             configured=True,
             available=available,
             detail="PostgreSQL is available." if available else "PostgreSQL is unavailable.",
+        )
+
+    @router.get(
+        "/health/queue",
+        response_model=QueueCapability,
+        summary="Check asynchronous queue capability",
+    )
+    async def queue_health() -> QueueCapability:
+        if evaluation_mode is not EvaluationMode.ASYNC or queue is None:
+            return QueueCapability(
+                configured=False,
+                available=False,
+                active_workers=0,
+                detail="Asynchronous evaluation mode is disabled.",
+            )
+        available = await queue.check_capability()
+        workers = 0
+        if available:
+            try:
+                workers = await queue.active_workers()
+            except QueueUnavailableError:
+                available = False
+        return QueueCapability(
+            configured=True,
+            available=available,
+            active_workers=workers,
+            detail="Redis queue is available." if available else "Redis queue is unavailable.",
         )
 
     return router

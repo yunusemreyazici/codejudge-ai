@@ -2,7 +2,7 @@
 
 ## Scope and threat model
 
-Phase 4 assumes submitted Python is actively malicious. A candidate may loop forever, allocate
+Phase 5 assumes submitted Python is actively malicious. A candidate may loop forever, allocate
 memory, emit unlimited output, spawn processes, inspect its environment, write files, access task
 tests, attempt network connections, or probe host resources.
 
@@ -81,9 +81,9 @@ need a different execution protocol in a later phase.
 
 ## Persisted source and database boundary
 
-Phase 4 stores exact submitted source in PostgreSQL so a historical evaluation remains
+Phase 4 and Phase 5 store exact submitted source in PostgreSQL so a historical evaluation remains
 explainable. Full source is omitted from list responses but deliberately returned by the UUID
-detail endpoint. Authentication and tenant authorization are outside Phase 4, so operators must
+detail endpoint. Authentication and tenant authorization are outside Phase 5, so operators must
 not expose this API to mutually untrusted users without an access-control layer.
 
 The application does not log submitted source, database URLs, SQL statements, or candidate
@@ -97,6 +97,25 @@ database trigger rejects row updates and deletes. Database administrators and sc
 remain trusted and can bypass or replace this policy, so database credentials and migration access
 must be protected separately from ordinary application access.
 
+## Queue and worker boundary
+
+PostgreSQL is the authoritative store for submitted source, expected runtime identity, lifecycle,
+retry state, and terminal snapshots. Redis Streams is an at-least-once delivery mechanism and
+contains only evaluation UUIDs. Candidate source, database/Redis credentials, Docker arguments,
+host paths, analyzer commands, and scoring configuration are never accepted from queue fields.
+Workers resolve all execution material from trusted PostgreSQL state and the packaged registry.
+
+The transactional outbox prevents an accepted PostgreSQL job from being silently lost when Redis
+is unavailable. Duplicate publication and redelivery are expected: PostgreSQL row locking, leases,
+stable evaluation UUIDs, and atomic snapshot/job completion prevent contradictory terminal
+results. Worker logs contain evaluation identity, worker identity, attempts, safe error codes, and
+exception classes only; they must not contain source or connection URLs.
+
+An unauthenticated global `Idempotency-Key` namespace is intentionally simple for Phase 5. It is
+not tenant isolation and can expose whether a key was previously used. Worker heartbeat keys in
+Redis contain random runtime identities and expire automatically; no host secrets are stored in
+them.
+
 ## Remaining risks
 
 - Container and kernel escape vulnerabilities
@@ -106,10 +125,12 @@ must be protected separately from ordinary application access.
 - Malicious behavior against Python, pytest, or the trusted entrypoint
 - Host I/O pressure up to the bounded container log and timeout ceilings
 - Local backend execution, which has no security boundary and must not receive untrusted code
-- Exposure of stored candidate source when the unauthenticated Phase 4 API is deployed without an
+- Exposure of stored candidate source when the unauthenticated Phase 5 API is deployed without an
   external authorization layer
-- Loss or compromise of PostgreSQL data or credentials; Phase 4 does not add encryption at rest or
+- Loss or compromise of PostgreSQL/Redis data or credentials; Phase 5 does not add encryption at rest or
   tenant isolation
+- No user-facing cancellation; an accepted job proceeds until it reaches a terminal lifecycle
+  state
 
 Report security issues privately to the repository maintainers rather than opening a public issue
 with exploit details.

@@ -69,17 +69,9 @@ class EvaluationEngine:
 
     async def evaluate_outcome(self, request: EvaluationRequest) -> EvaluationOutcome:
         started_at = time.monotonic()
-        code_size = len(request.code.encode("utf-8"))
-        if code_size > self._max_code_size:
-            raise CodeSizeExceededError(code_size, self._max_code_size)
+        task = self.prepare_request(request)
 
-        task = self._registry.get(request.task_id)
-        if request.language != task.specification.language:
-            raise UnsupportedLanguageError(request.language)
-        runner = self._runners.get(request.language)
-        if runner is None:
-            raise UnsupportedLanguageError(request.language)
-
+        runner = self._runners[request.language]
         logger.info("evaluation started task_id=%s language=%s", request.task_id, request.language)
         runner_result = await runner.evaluate(task, request.code)
         if runner_result.infrastructure_error is not None:
@@ -140,6 +132,24 @@ class EvaluationEngine:
             time.monotonic() - started_at,
         )
         return EvaluationOutcome(result=result, runner_result=runner_result, task=task)
+
+    def prepare_request(self, request: EvaluationRequest) -> RegisteredTask:
+        """Validate a request and resolve the trusted task without executing candidate code."""
+        code_size = len(request.code.encode("utf-8"))
+        if code_size > self._max_code_size:
+            raise CodeSizeExceededError(code_size, self._max_code_size)
+
+        task = self._registry.get(request.task_id)
+        if request.language != task.specification.language:
+            raise UnsupportedLanguageError(request.language)
+        runner = self._runners.get(request.language)
+        if runner is None:
+            raise UnsupportedLanguageError(request.language)
+        return task
+
+    @property
+    def analysis_enabled(self) -> bool:
+        return self._analysis_engine is not None
 
     async def runner_capability(self, language: str) -> RunnerCapability:
         runner = self._runners.get(language)

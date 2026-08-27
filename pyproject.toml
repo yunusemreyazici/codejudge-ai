@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codejudge-ai"
-version = "0.4.0"
+version = "0.5.0"
 description = "A deterministic evaluation framework for testing and scoring code submissions."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -19,10 +19,14 @@ dependencies = [
     "pydantic>=2.11,<3.0",
     "pytest>=8.4,<10.0",
     "radon>=6.0,<7.0",
+    "redis>=6,<8",
     "ruff>=0.12,<1.0",
     "sqlalchemy[asyncio]>=2.0,<3.0",
     "uvicorn[standard]>=0.35,<1.0",
 ]
+
+[project.scripts]
+codejudge-worker = "app.worker.main:main"
 
 [project.optional-dependencies]
 dev = [
@@ -50,7 +54,9 @@ addopts = "--strict-config --strict-markers"
 asyncio_mode = "auto"
 markers = [
     "database: requires a migrated PostgreSQL test database",
+    "queue: requires a real Redis service",
     "sandbox: requires a running Docker daemon and the Phase 2 sandbox image",
+    "worker_e2e: requires PostgreSQL, Redis, and the Docker sandbox image",
 ]
 
 [tool.ruff]

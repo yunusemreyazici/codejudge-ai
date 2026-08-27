@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from app.core.version import codejudge_version
 from app.db.repositories import EvaluationRepository, PersistenceError
@@ -15,7 +15,13 @@ from app.snapshots.metadata import (
     ExecutionMetadataProvider,
     canonical_analyzer_versions,
 )
-from app.snapshots.models import EvaluationDetail, EvaluationSummary
+from app.snapshots.models import (
+    EvaluationDetail,
+    EvaluationSnapshot,
+    EvaluationSummary,
+    ExecutionEnvironmentSnapshot,
+)
+from app.tasks.registry import RegisteredTask
 
 
 class EvaluationHistoryUnavailableError(RuntimeError):
@@ -42,11 +48,52 @@ class EvaluationService:
             return await self._engine.evaluate(request)
 
         created_at = datetime.now(UTC)
+        snapshot = await self.evaluate_snapshot(
+            request,
+            evaluation_id=uuid4(),
+            created_at=created_at,
+        )
+        try:
+            stored = await self._repository.create(snapshot)
+        except PersistenceError as error:
+            raise EvaluationInfrastructureError("Evaluation persistence is unavailable.") from error
+        return EvaluationResult(
+            evaluation_id=stored.evaluation_id,
+            created_at=stored.created_at,
+            task_id=stored.task_id,
+            status=stored.status,
+            score=stored.final_score,
+            tests=stored.tests,
+            score_breakdown=stored.score_breakdown,
+            analysis=EvaluationDetail.from_snapshot(stored).analysis,
+            findings=stored.execution_findings,
+        )
+
+    def prepare_request(self, request: EvaluationRequest) -> RegisteredTask:
+        return self._engine.prepare_request(request)
+
+    async def runtime_identity(
+        self,
+    ) -> tuple[ExecutionEnvironmentSnapshot, dict[str, str], str, str]:
+        return (
+            await self._execution_metadata.snapshot(),
+            canonical_analyzer_versions() if self._engine.analysis_enabled else {},
+            SCORING_POLICY_VERSION,
+            codejudge_version(),
+        )
+
+    async def evaluate_snapshot(
+        self,
+        request: EvaluationRequest,
+        *,
+        evaluation_id: UUID,
+        created_at: datetime,
+    ) -> EvaluationSnapshot:
         outcome = await self._engine.evaluate_outcome(request)
         completed_at = datetime.now(UTC)
         execution = await self._execution_metadata.snapshot()
         versions = canonical_analyzer_versions() if outcome.result.analysis is not None else {}
-        snapshot = build_evaluation_snapshot(
+        return build_evaluation_snapshot(
             request=request,
             task=outcome.task,
             result=outcome.result,
@@ -57,16 +104,7 @@ class EvaluationService:
             analyzer_versions=versions,
             codejudge_version=codejudge_version(),
             scoring_policy_version=SCORING_POLICY_VERSION,
-        )
-        try:
-            stored = await self._repository.create(snapshot)
-        except PersistenceError as error:
-            raise EvaluationInfrastructureError("Evaluation persistence is unavailable.") from error
-        return outcome.result.model_copy(
-            update={
-                "evaluation_id": stored.evaluation_id,
-                "created_at": stored.created_at,
-            }
+            evaluation_id=evaluation_id,
         )
 
     async def get(self, evaluation_id: UUID) -> EvaluationDetail | None:

@@ -60,7 +60,7 @@ class SqlAlchemyEvaluationRepository:
         try:
             async with self._session_factory() as session:
                 async with session.begin():
-                    session.add(_record_from_snapshot(snapshot))
+                    session.add(evaluation_record_from_snapshot(snapshot))
         except SQLAlchemyError as error:
             logger.error(
                 "evaluation persistence failed evaluation_id=%s task_id=%s error_type=%s",
@@ -166,7 +166,7 @@ def _summary_query() -> Select[tuple[object, ...]]:
     )
 
 
-def _record_from_snapshot(snapshot: EvaluationSnapshot) -> EvaluationRecord:
+def evaluation_record_from_snapshot(snapshot: EvaluationSnapshot) -> EvaluationRecord:
     breakdown = snapshot.score_breakdown
     return EvaluationRecord(
         evaluation_id=snapshot.evaluation_id,

@@ -11,12 +11,14 @@ from sqlalchemy.engine import make_url
 
 from app.db.repositories import SqlAlchemyEvaluationRepository
 from app.db.session import Database
+from app.jobs.repositories import SqlAlchemyEvaluationJobRepository
 
 
 @dataclass(frozen=True, slots=True)
 class DatabaseHarness:
     database: Database
     repository: SqlAlchemyEvaluationRepository
+    job_repository: SqlAlchemyEvaluationJobRepository
 
 
 @pytest_asyncio.fixture
@@ -30,13 +32,16 @@ async def database_harness() -> AsyncIterator[DatabaseHarness]:
 
     database = Database(database_url)
     async with database.engine.begin() as connection:
-        await connection.execute(text("TRUNCATE TABLE evaluations"))
+        await connection.execute(text("TRUNCATE TABLE outbox_events, evaluation_jobs, evaluations"))
     try:
         yield DatabaseHarness(
             database=database,
             repository=SqlAlchemyEvaluationRepository(database.session_factory),
+            job_repository=SqlAlchemyEvaluationJobRepository(database.session_factory),
         )
     finally:
         async with database.engine.begin() as connection:
-            await connection.execute(text("TRUNCATE TABLE evaluations"))
+            await connection.execute(
+                text("TRUNCATE TABLE outbox_events, evaluation_jobs, evaluations")
+            )
         await database.dispose()

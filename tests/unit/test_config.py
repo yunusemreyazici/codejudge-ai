@@ -1,12 +1,13 @@
 import pytest
 
-from app.core.config import ExecutionBackend, Settings
+from app.core.config import EvaluationMode, ExecutionBackend, Settings
 
 
 def test_settings_default_to_docker_backend() -> None:
     assert Settings().execution_backend is ExecutionBackend.DOCKER
     assert Settings().static_analysis_enabled is True
     assert Settings().persistence_enabled is False
+    assert Settings().evaluation_mode is EvaluationMode.SYNC
 
 
 def test_settings_load_typed_sandbox_values(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -73,3 +74,39 @@ def test_settings_reject_sqlite_database_url(monkeypatch: pytest.MonkeyPatch) ->
 
     with pytest.raises(ValueError, match=r"postgresql\+asyncpg"):
         Settings.from_env()
+
+
+def test_async_settings_load_worker_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PERSISTENCE_ENABLED", "true")
+    monkeypatch.setenv("EVALUATION_MODE", "async")
+    monkeypatch.setenv(
+        "DATABASE_URL", "postgresql+asyncpg://codejudge:secret@localhost/codejudge_test"
+    )
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/3")
+    monkeypatch.setenv("WORKER_CONCURRENCY", "2")
+    monkeypatch.setenv("WORKER_LEASE_SECONDS", "90")
+    monkeypatch.setenv("WORKER_MAX_ATTEMPTS", "4")
+    monkeypatch.setenv("OUTBOX_POLL_INTERVAL_SECONDS", "0.25")
+    monkeypatch.setenv("RETRY_BASE_DELAY_SECONDS", "2")
+
+    settings = Settings.from_env()
+
+    assert settings.evaluation_mode is EvaluationMode.ASYNC
+    assert settings.redis_url == "redis://localhost:6379/3"
+    assert settings.worker_concurrency == 2
+    assert settings.worker_lease_seconds == 90
+    assert settings.worker_max_attempts == 4
+    assert settings.outbox_poll_interval_seconds == 0.25
+    assert settings.retry_base_delay_seconds == 2
+
+
+def test_async_mode_requires_persistence_and_redis() -> None:
+    with pytest.raises(ValueError, match="PERSISTENCE_ENABLED"):
+        Settings(evaluation_mode=EvaluationMode.ASYNC, redis_url="redis://localhost")
+
+    with pytest.raises(ValueError, match="REDIS_URL"):
+        Settings(
+            evaluation_mode=EvaluationMode.ASYNC,
+            persistence_enabled=True,
+            database_url="postgresql+asyncpg://codejudge:secret@localhost/codejudge_test",
+        )
