@@ -4,7 +4,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.core.config import Settings
+from app.core.config import ExecutionBackend, Settings
 from app.main import create_app
 
 CORRECT_LRU = """
@@ -45,7 +45,11 @@ class LRUCache:
 
 @pytest_asyncio.fixture
 async def client() -> AsyncIterator[AsyncClient]:
-    settings = Settings(log_level="CRITICAL", max_code_size=100 * 1024)
+    settings = Settings(
+        log_level="CRITICAL",
+        max_code_size=100 * 1024,
+        execution_backend=ExecutionBackend.LOCAL,
+    )
     transport = ASGITransport(app=create_app(settings=settings))
     async with AsyncClient(transport=transport, base_url="http://test") as test_client:
         yield test_client

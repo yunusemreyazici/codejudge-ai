@@ -1,4 +1,30 @@
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
+
+from app.core.config import ExecutionBackend, Settings
+from app.evaluator.models import RunnerCapability, RunnerResult
+from app.main import create_app
+from app.tasks.registry import RegisteredTask
+
+
+class UnavailableRunner:
+    async def evaluate(self, task: RegisteredTask, code: str) -> RunnerResult:
+        return RunnerResult(
+            exit_code=None,
+            stdout="",
+            stderr="",
+            duration_seconds=0.01,
+            passed=0,
+            failed=0,
+            total=0,
+            infrastructure_error="Docker daemon is unavailable.",
+        )
+
+    async def check_capability(self) -> RunnerCapability:
+        return RunnerCapability(
+            backend="docker",
+            available=False,
+            detail="Docker daemon is unavailable.",
+        )
 
 
 async def test_health(client: AsyncClient) -> None:
@@ -6,6 +32,17 @@ async def test_health(client: AsyncClient) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+async def test_sandbox_health_reports_configured_backend(client: AsyncClient) -> None:
+    response = await client.get("/health/sandbox")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "backend": "local",
+        "available": True,
+        "detail": "Local execution is available but is not isolated.",
+    }
 
 
 async def test_list_tasks_does_not_expose_tests(client: AsyncClient) -> None:
@@ -114,3 +151,21 @@ async def test_oversized_source_returns_useful_validation_error(client: AsyncCli
 
     assert response.status_code == 422
     assert response.json() == {"detail": "Code is 102401 bytes; maximum is 102400 bytes"}
+
+
+async def test_unavailable_execution_backend_returns_503() -> None:
+    settings = Settings(
+        log_level="CRITICAL",
+        execution_backend=ExecutionBackend.DOCKER,
+    )
+    application = create_app(settings=settings, python_runner=UnavailableRunner())
+    transport = ASGITransport(app=application)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/evaluations",
+            json={"task_id": "lru-cache", "language": "python", "code": "pass"},
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Docker daemon is unavailable."}

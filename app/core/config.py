@@ -4,12 +4,32 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from enum import StrEnum
 
 DEFAULT_APP_NAME = "CodeJudge AI"
 DEFAULT_APP_ENV = "development"
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_EXECUTION_TIMEOUT = 5.0
 DEFAULT_MAX_CODE_SIZE = 100 * 1024
+DEFAULT_EXECUTION_BACKEND = "docker"
+DEFAULT_SANDBOX_IMAGE = "codejudge-python-sandbox:phase2"
+DEFAULT_SANDBOX_MEMORY_MB = 256
+DEFAULT_SANDBOX_CPUS = 0.5
+DEFAULT_SANDBOX_PIDS_LIMIT = 64
+DEFAULT_SANDBOX_TIMEOUT_SECONDS = 5.0
+DEFAULT_SANDBOX_OUTPUT_LIMIT_BYTES = 1024 * 1024
+
+
+class ExecutionBackend(StrEnum):
+    DOCKER = "docker"
+    LOCAL = "local"
+
+
+def _environment_value(name: str, default: str) -> str:
+    value = os.getenv(name, default).strip()
+    if not value:
+        raise ValueError(f"{name} must not be blank")
+    return value
 
 
 def _positive_float(name: str, default: float) -> float:
@@ -37,6 +57,13 @@ class Settings:
     log_level: str = DEFAULT_LOG_LEVEL
     default_execution_timeout: float = DEFAULT_EXECUTION_TIMEOUT
     max_code_size: int = DEFAULT_MAX_CODE_SIZE
+    execution_backend: ExecutionBackend = ExecutionBackend.DOCKER
+    sandbox_image: str = DEFAULT_SANDBOX_IMAGE
+    sandbox_memory_mb: int = DEFAULT_SANDBOX_MEMORY_MB
+    sandbox_cpus: float = DEFAULT_SANDBOX_CPUS
+    sandbox_pids_limit: int = DEFAULT_SANDBOX_PIDS_LIMIT
+    sandbox_timeout_seconds: float = DEFAULT_SANDBOX_TIMEOUT_SECONDS
+    sandbox_output_limit_bytes: int = DEFAULT_SANDBOX_OUTPUT_LIMIT_BYTES
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -49,4 +76,17 @@ class Settings:
                 "DEFAULT_EXECUTION_TIMEOUT", DEFAULT_EXECUTION_TIMEOUT
             ),
             max_code_size=_positive_int("MAX_CODE_SIZE", DEFAULT_MAX_CODE_SIZE),
+            execution_backend=ExecutionBackend(
+                _environment_value("EXECUTION_BACKEND", DEFAULT_EXECUTION_BACKEND).lower()
+            ),
+            sandbox_image=_environment_value("SANDBOX_IMAGE", DEFAULT_SANDBOX_IMAGE),
+            sandbox_memory_mb=_positive_int("SANDBOX_MEMORY_MB", DEFAULT_SANDBOX_MEMORY_MB),
+            sandbox_cpus=_positive_float("SANDBOX_CPUS", DEFAULT_SANDBOX_CPUS),
+            sandbox_pids_limit=_positive_int("SANDBOX_PIDS_LIMIT", DEFAULT_SANDBOX_PIDS_LIMIT),
+            sandbox_timeout_seconds=_positive_float(
+                "SANDBOX_TIMEOUT_SECONDS", DEFAULT_SANDBOX_TIMEOUT_SECONDS
+            ),
+            sandbox_output_limit_bytes=_positive_int(
+                "SANDBOX_OUTPUT_LIMIT_BYTES", DEFAULT_SANDBOX_OUTPUT_LIMIT_BYTES
+            ),
         )

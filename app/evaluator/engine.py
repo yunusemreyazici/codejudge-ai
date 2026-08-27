@@ -11,6 +11,7 @@ from app.evaluator.models import (
     EvaluationRequest,
     EvaluationResult,
     EvaluationStatus,
+    RunnerCapability,
     TestResult,
 )
 from app.evaluator.scoring import calculate_score
@@ -31,6 +32,10 @@ class CodeSizeExceededError(ValueError):
         super().__init__(f"Code is {actual_bytes} bytes; maximum is {maximum_bytes} bytes")
         self.actual_bytes = actual_bytes
         self.maximum_bytes = maximum_bytes
+
+
+class EvaluationInfrastructureError(RuntimeError):
+    """The configured runner could not provide its execution service."""
 
 
 class EvaluationEngine:
@@ -61,6 +66,14 @@ class EvaluationEngine:
 
         logger.info("evaluation started task_id=%s language=%s", request.task_id, request.language)
         runner_result = await runner.evaluate(task, request.code)
+        if runner_result.infrastructure_error is not None:
+            logger.error(
+                "evaluation infrastructure unavailable task_id=%s language=%s reason=%s",
+                request.task_id,
+                request.language,
+                runner_result.infrastructure_error,
+            )
+            raise EvaluationInfrastructureError(runner_result.infrastructure_error)
         tests = TestResult(
             passed=runner_result.passed,
             failed=runner_result.failed,
@@ -71,7 +84,11 @@ class EvaluationEngine:
         breakdown = calculate_score(tests)
         status = (
             EvaluationStatus.FAILED
-            if runner_result.timed_out or runner_result.infrastructure_error is not None
+            if (
+                runner_result.timed_out
+                or runner_result.oom_killed
+                or runner_result.sandbox_error is not None
+            )
             else EvaluationStatus.COMPLETED
         )
         result = EvaluationResult(
@@ -91,3 +108,9 @@ class EvaluationEngine:
             time.monotonic() - started_at,
         )
         return result
+
+    async def runner_capability(self, language: str) -> RunnerCapability:
+        runner = self._runners.get(language)
+        if runner is None:
+            raise UnsupportedLanguageError(language)
+        return await runner.check_capability()

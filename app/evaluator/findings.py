@@ -11,14 +11,46 @@ from app.evaluator.models import (
 def build_findings(result: RunnerResult, timeout_seconds: float) -> list[Finding]:
     findings: list[Finding] = []
 
+    if result.output_truncated:
+        findings.append(
+            Finding(
+                severity=FindingSeverity.WARNING,
+                category=FindingCategory.RESOURCE,
+                message=(
+                    "Candidate output exceeded the configured capture limit and was truncated."
+                ),
+            )
+        )
+
     if result.timed_out:
+        enforced_timeout = result.enforced_timeout_seconds or timeout_seconds
         findings.append(
             Finding(
                 severity=FindingSeverity.ERROR,
                 category=FindingCategory.EXECUTION,
                 message=(
-                    f"Candidate code exceeded the {timeout_seconds:g} second execution timeout."
+                    f"Candidate code exceeded the {enforced_timeout:g} second execution timeout."
                 ),
+            )
+        )
+        return findings
+
+    if result.oom_killed:
+        findings.append(
+            Finding(
+                severity=FindingSeverity.ERROR,
+                category=FindingCategory.RESOURCE,
+                message="Candidate exceeded the sandbox memory limit.",
+            )
+        )
+        return findings
+
+    if result.sandbox_error is not None:
+        findings.append(
+            Finding(
+                severity=FindingSeverity.ERROR,
+                category=FindingCategory.SANDBOX,
+                message=result.sandbox_error,
             )
         )
         return findings

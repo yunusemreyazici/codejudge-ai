@@ -1,9 +1,15 @@
 from app.evaluator.engine import (
     CodeSizeExceededError,
     EvaluationEngine,
+    EvaluationInfrastructureError,
     UnsupportedLanguageError,
 )
-from app.evaluator.models import EvaluationRequest, EvaluationStatus, RunnerResult
+from app.evaluator.models import (
+    EvaluationRequest,
+    EvaluationStatus,
+    RunnerCapability,
+    RunnerResult,
+)
 from app.tasks.registry import RegisteredTask, TaskNotFoundError, TaskRegistry
 
 
@@ -15,6 +21,9 @@ class FakeRunner:
     async def evaluate(self, task: RegisteredTask, code: str) -> RunnerResult:
         self.received_code = code
         return self.result
+
+    async def check_capability(self) -> RunnerCapability:
+        return RunnerCapability(backend="fake", available=True, detail="Available")
 
 
 async def test_engine_orchestrates_and_scores_runner_result() -> None:
@@ -101,3 +110,48 @@ async def test_engine_returns_failed_result_and_finding_for_timeout() -> None:
     assert result.score == 0
     assert result.findings[0].category == "execution"
     assert "timeout" in result.findings[0].message
+
+
+async def test_engine_raises_infrastructure_error_instead_of_scoring_candidate() -> None:
+    runner = FakeRunner(
+        RunnerResult(
+            exit_code=None,
+            stdout="",
+            stderr="",
+            duration_seconds=0.01,
+            passed=0,
+            failed=0,
+            total=0,
+            infrastructure_error="Docker daemon is unavailable.",
+        )
+    )
+    engine = EvaluationEngine(TaskRegistry.default(), {"python": runner}, max_code_size=1000)
+
+    try:
+        await engine.evaluate(
+            EvaluationRequest(task_id="lru-cache", language="python", code="pass")
+        )
+    except EvaluationInfrastructureError as error:
+        assert str(error) == "Docker daemon is unavailable."
+    else:
+        raise AssertionError("EvaluationInfrastructureError was not raised")
+
+
+async def test_engine_exposes_runner_capability() -> None:
+    runner = FakeRunner(
+        RunnerResult(
+            exit_code=0,
+            stdout="",
+            stderr="",
+            duration_seconds=0.01,
+            passed=1,
+            failed=0,
+            total=1,
+        )
+    )
+    engine = EvaluationEngine(TaskRegistry.default(), {"python": runner}, max_code_size=1000)
+
+    capability = await engine.runner_capability("python")
+
+    assert capability.backend == "fake"
+    assert capability.available is True

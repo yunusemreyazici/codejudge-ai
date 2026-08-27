@@ -9,7 +9,7 @@ from app.tasks.registry import TaskRegistry
 
 def create_api_router(registry: TaskRegistry, engine: EvaluationEngine) -> APIRouter:
     router = APIRouter()
-    router.include_router(health.router)
+    router.include_router(health.create_router(engine))
     versioned = APIRouter(prefix="/api/v1")
     versioned.include_router(tasks.create_router(registry))
     versioned.include_router(evaluations.create_router(engine))

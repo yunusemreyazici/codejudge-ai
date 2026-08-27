@@ -17,7 +17,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from app.evaluator.models import RunnerResult
+from app.evaluator.models import RunnerCapability, RunnerResult
 from app.tasks.registry import RegisteredTask
 
 _REPORT_PLUGIN = """
@@ -103,6 +103,7 @@ class PythonRunner:
                     failed=0,
                     total=0,
                     timed_out=True,
+                    enforced_timeout_seconds=task.specification.timeout_seconds,
                 )
             except asyncio.CancelledError:
                 await self._terminate(process)
@@ -133,7 +134,15 @@ class PythonRunner:
                 passed=passed,
                 failed=failed,
                 total=total,
+                enforced_timeout_seconds=task.specification.timeout_seconds,
             )
+
+    async def check_capability(self) -> RunnerCapability:
+        return RunnerCapability(
+            backend="local",
+            available=True,
+            detail="Local execution is available but is not isolated.",
+        )
 
     @staticmethod
     async def _terminate(process: asyncio.subprocess.Process) -> None:

@@ -11,7 +11,8 @@ from app.api.router import create_api_router
 from app.core.config import Settings
 from app.core.logging import configure_logging
 from app.evaluator.engine import EvaluationEngine
-from app.runners.python_runner import PythonRunner
+from app.runners.base import CodeRunner
+from app.runners.factory import create_python_runner
 from app.tasks.registry import TaskRegistry
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 def create_app(
     settings: Settings | None = None,
     registry: TaskRegistry | None = None,
+    python_runner: CodeRunner | None = None,
 ) -> FastAPI:
     resolved_settings = settings or Settings.from_env()
     configure_logging(resolved_settings.log_level)
@@ -28,16 +30,16 @@ def create_app(
     )
     engine = EvaluationEngine(
         registry=resolved_registry,
-        runners={"python": PythonRunner()},
+        runners={"python": python_runner or create_python_runner(resolved_settings)},
         max_code_size=resolved_settings.max_code_size,
     )
     application = FastAPI(
         title=resolved_settings.app_name,
-        version="0.1.0",
+        version="0.2.0",
         summary="Deterministic code submission evaluation",
         description=(
-            "Phase 1 of CodeJudge AI: a synchronous evaluator backed by local pytest "
-            "subprocesses. Local execution is not a security sandbox."
+            "CodeJudge AI Phase 2: deterministic evaluation through a configurable local or "
+            "restricted Docker execution backend."
         ),
     )
     application.include_router(create_api_router(resolved_registry, engine))

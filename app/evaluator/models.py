@@ -22,6 +22,8 @@ class FindingCategory(StrEnum):
     VALIDATION = "validation"
     EXECUTION = "execution"
     TESTING = "testing"
+    RESOURCE = "resource"
+    SANDBOX = "sandbox"
 
 
 class Task(BaseModel):
@@ -97,4 +99,16 @@ class RunnerResult(BaseModel):
     failed: int = Field(ge=0)
     total: int = Field(ge=0)
     timed_out: bool = False
+    enforced_timeout_seconds: float | None = Field(default=None, gt=0)
+    output_truncated: bool = False
+    oom_killed: bool = False
+    sandbox_error: str | None = None
     infrastructure_error: str | None = None
+
+
+class RunnerCapability(BaseModel):
+    """Operational availability of a configured execution backend."""
+
+    backend: str
+    available: bool
+    detail: str
