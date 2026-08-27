@@ -1,0 +1,10 @@
+{
+  "id": "lru-cache",
+  "title": "LRU Cache",
+  "description": "Implement an LRU cache with O(1) average-time get and put operations. get(key) returns the stored value or -1 when absent. put(key, value) inserts or updates a value and evicts the least recently used key when capacity is exceeded. Capacity is always at least one.",
+  "language": "python",
+  "entrypoint": "solution:LRUCache",
+  "timeout_seconds": 5.0,
+  "version": "1.0"
+}
+

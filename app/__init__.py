@@ -1,0 +1,1 @@
+"""CodeJudge AI application package."""
