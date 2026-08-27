@@ -102,6 +102,8 @@ class RunnerResult(BaseModel):
     enforced_timeout_seconds: float | None = Field(default=None, gt=0)
     output_truncated: bool = False
     oom_killed: bool = False
+    syntax_error: bool = False
+    import_error: bool = False
     sandbox_error: str | None = None
     infrastructure_error: str | None = None
 

@@ -21,11 +21,20 @@ class StructuredReporter:
         reported_failed = len(stats.get("failed", [])) + len(stats.get("error", []))
         collected = int(session.testscollected)
         total = max(collected, passed + reported_failed)
+        failure_details = "\n".join(
+            str(report.longrepr)
+            for category in ("error", "failed")
+            for report in stats.get(category, [])
+        )
         payload = {
             "passed": passed,
             "failed": total - passed,
             "total": total,
             "duration_seconds": time.monotonic() - self._started_at,
+            "syntax_error": "SyntaxError" in failure_details,
+            "import_error": (
+                "ImportError" in failure_details or "ModuleNotFoundError" in failure_details
+            ),
         }
         report_path = Path(os.environ["CODEJUDGE_REPORT_PATH"])
         report_path.write_text(json.dumps(payload), encoding="utf-8")

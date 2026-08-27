@@ -25,7 +25,7 @@ def test_oom_and_output_limit_become_resource_findings() -> None:
         FindingCategory.RESOURCE,
         FindingCategory.RESOURCE,
     ]
-    assert findings[1].message == "Candidate exceeded the sandbox memory limit."
+    assert findings[0].message == "Candidate exceeded the sandbox memory limit."
 
 
 def test_sandbox_protocol_error_becomes_sandbox_finding() -> None:

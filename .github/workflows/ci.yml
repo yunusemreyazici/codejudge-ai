@@ -56,9 +56,10 @@ jobs:
 
       - name: Run Docker sandbox tests
         run: pytest -v -m sandbox tests/sandbox
+        env:
+          CODEJUDGE_REQUIRE_DOCKER: "1"
 
       - name: Verify sandbox container cleanup
         run: |
           leaked="$(docker ps -a --filter label=codejudge.component=sandbox --format '{{.Names}}')"
           test -z "$leaked"
-

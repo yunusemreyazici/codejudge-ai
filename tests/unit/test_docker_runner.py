@@ -112,7 +112,7 @@ async def test_runner_builds_restricted_container_and_cleans_up(correct_lru: str
     assert ["--memory-swap", "256m"] == create[create.index("--memory-swap") :][:2]
     assert ["--log-driver", "local"] == create[create.index("--log-driver") :][:2]
     log_options = [create[index + 1] for index, value in enumerate(create) if value == "--log-opt"]
-    assert log_options == ["max-size=1k", "max-file=1"]
+    assert log_options == ["max-size=1k", "max-file=1", "compress=false"]
     assert ["--security-opt", "no-new-privileges=true"] == create[create.index("--security-opt") :][
         :2
     ]

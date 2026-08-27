@@ -68,6 +68,15 @@ class _ContainerState:
     oom_killed: bool
 
 
+@dataclass(frozen=True, slots=True)
+class _TestReport:
+    passed: int
+    failed: int
+    total: int
+    syntax_error: bool
+    import_error: bool
+
+
 class DockerPythonRunner:
     """Evaluate Python code in an intentionally restricted, disposable container."""
 
@@ -197,8 +206,8 @@ class DockerPythonRunner:
                         oom_killed=True,
                     )
 
-                counts = self._read_report(report_path)
-                if counts is None:
+                report = self._read_report(report_path)
+                if report is None:
                     return RunnerResult(
                         exit_code=state.exit_code,
                         stdout=start_result.stdout,
@@ -212,17 +221,18 @@ class DockerPythonRunner:
                         sandbox_error="Sandbox exited without a valid structured test report.",
                     )
 
-                passed, failed, total = counts
                 return RunnerResult(
                     exit_code=state.exit_code,
                     stdout=start_result.stdout,
                     stderr=start_result.stderr,
                     duration_seconds=time.monotonic() - started_at,
-                    passed=passed,
-                    failed=failed,
-                    total=total,
+                    passed=report.passed,
+                    failed=report.failed,
+                    total=report.total,
                     enforced_timeout_seconds=effective_timeout,
                     output_truncated=start_result.output_truncated,
+                    syntax_error=report.syntax_error,
+                    import_error=report.import_error,
                 )
             except asyncio.CancelledError:
                 if container_created:
@@ -257,6 +267,8 @@ class DockerPythonRunner:
             f"max-size={log_size_kib}k",
             "--log-opt",
             "max-file=1",
+            "--log-opt",
+            "compress=false",
             "--network",
             "none",
             "--memory",
@@ -349,7 +361,7 @@ class DockerPythonRunner:
         )
 
     @staticmethod
-    def _read_report(report_path: Path) -> tuple[int, int, int] | None:
+    def _read_report(report_path: Path) -> _TestReport | None:
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
         try:
             descriptor = os.open(report_path, flags)
@@ -375,15 +387,25 @@ class DockerPythonRunner:
         passed = raw.get("passed")
         failed = raw.get("failed")
         total = raw.get("total")
+        syntax_error = raw.get("syntax_error", False)
+        import_error = raw.get("import_error", False)
         if not isinstance(passed, int) or isinstance(passed, bool):
             return None
         if not isinstance(failed, int) or isinstance(failed, bool):
             return None
         if not isinstance(total, int) or isinstance(total, bool):
             return None
+        if not isinstance(syntax_error, bool) or not isinstance(import_error, bool):
+            return None
         if passed < 0 or failed < 0 or total != passed + failed:
             return None
-        return passed, failed, total
+        return _TestReport(
+            passed=passed,
+            failed=failed,
+            total=total,
+            syntax_error=syntax_error,
+            import_error=import_error,
+        )
 
     @staticmethod
     def _infrastructure_failure(started_at: float, message: str) -> RunnerResult:

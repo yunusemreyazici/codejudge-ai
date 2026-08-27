@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -37,6 +38,8 @@ def _runner(
 async def _require_sandbox(runner: DockerPythonRunner) -> None:
     capability = await runner.check_capability()
     if not capability.available:
+        if os.getenv("CODEJUDGE_REQUIRE_DOCKER") == "1":
+            pytest.fail(f"Docker sandbox is required: {capability.detail}")
         pytest.skip(capability.detail)
 
 
@@ -202,7 +205,11 @@ from pathlib import Path
 
 
 def restrictions_hold():
-    return os.geteuid() == 10001 and not Path("/var/run/docker.sock").exists()
+    return (
+        os.geteuid() == 10001
+        and os.getegid() == 10001
+        and not Path("/var/run/docker.sock").exists()
+    )
 """.lstrip()
 
     result = await runner.evaluate(task, code)
