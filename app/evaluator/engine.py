@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 from app.analysis.base import CandidateSource, StaticAnalysisProvider
 from app.analysis.engine import StaticAnalysisInfrastructureError
@@ -14,11 +15,12 @@ from app.evaluator.models import (
     EvaluationResult,
     EvaluationStatus,
     RunnerCapability,
+    RunnerResult,
     TestResult,
 )
 from app.evaluator.scoring import calculate_final_score, calculate_score
 from app.runners.base import CodeRunner
-from app.tasks.registry import TaskRegistry
+from app.tasks.registry import RegisteredTask, TaskRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,13 @@ class EvaluationInfrastructureError(RuntimeError):
     """Execution or static-analysis infrastructure could not provide its service."""
 
 
+@dataclass(frozen=True, slots=True)
+class EvaluationOutcome:
+    result: EvaluationResult
+    runner_result: RunnerResult
+    task: RegisteredTask
+
+
 class EvaluationEngine:
     """Resolve, dispatch, and score an evaluation without executing code directly."""
 
@@ -56,6 +65,9 @@ class EvaluationEngine:
         self._analysis_engine = analysis_engine
 
     async def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+        return (await self.evaluate_outcome(request)).result
+
+    async def evaluate_outcome(self, request: EvaluationRequest) -> EvaluationOutcome:
         started_at = time.monotonic()
         code_size = len(request.code.encode("utf-8"))
         if code_size > self._max_code_size:
@@ -127,7 +139,7 @@ class EvaluationEngine:
             tests.failed,
             time.monotonic() - started_at,
         )
-        return result
+        return EvaluationOutcome(result=result, runner_result=runner_result, task=task)
 
     async def runner_capability(self, language: str) -> RunnerCapability:
         runner = self._runners.get(language)

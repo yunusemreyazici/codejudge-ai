@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import StrEnum
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -121,6 +123,8 @@ class ScoreBreakdown(BaseModel):
 
 
 class EvaluationResult(BaseModel):
+    evaluation_id: UUID | None = None
+    created_at: datetime | None = None
     task_id: str
     status: EvaluationStatus
     score: float = Field(ge=0, le=100)

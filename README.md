@@ -2,9 +2,9 @@
 
 > A production-oriented evaluation framework for testing and scoring AI-generated code.
 
-CodeJudge AI is an open-source backend for reproducible code evaluation. Phase 3 combines the
-restricted Docker execution path with deterministic Ruff, mypy, Bandit, and cyclomatic-complexity
-analysis while keeping execution and static analysis behind separate typed abstractions.
+CodeJudge AI is an open-source backend for reproducible code evaluation. Phase 4 combines the
+restricted Docker execution path and deterministic static analysis with immutable, queryable
+PostgreSQL snapshots that preserve how every stored result was produced.
 
 > [!CAUTION]
 > Docker materially strengthens isolation, but it is **not a perfect security boundary**. The
@@ -51,50 +51,57 @@ Implemented:
 - Radon cyclomatic-complexity maximum and average metrics
 - Deterministic five-dimensional weighted scoring with correctness derived only from tests
 - Per-analyzer timeouts, bounded output capture, minimal environments, and temporary cleanup
-- Unit, HTTP integration, and Docker security tests with GitHub Actions CI
+- Async SQLAlchemy 2.x persistence through the PostgreSQL `asyncpg` driver
+- UUID evaluation identities and append-only snapshots protected by a database trigger
+- Exact source hashes, task/test fingerprints, and reproducibility fingerprints
+- Stored analyzer, scoring-policy, application, and sandbox-image versions
+- Historical detail and filtered/paginated summary APIs that never rerun candidate code
+- Alembic migrations plus unit, PostgreSQL, HTTP, and Docker security tests in CI
 
 Planned features are listed in the roadmap and are not part of the current implementation.
 
 ## Architecture
 
 ```text
-                    EvaluationEngine
-                       /         \
-                      /           \
-              CodeRunner       StaticAnalysisEngine
-                  |             /    |     |      \
-          DockerPythonRunner  Ruff  mypy  Bandit  Radon
-                  \             \    |     |      /
-                   \             normalized findings
-                    \                 /
-                     Score Engine
-                          |
-                  EvaluationResult
+                         EvaluationEngine
+                         /              \
+                   CodeRunner      StaticAnalysisEngine
+                      |             /    |     |      \
+             DockerPythonRunner  Ruff  mypy  Bandit  Radon
+                         \              /
+                          Score Engine
+                              |
+                       EvaluationResult
+                              |
+                       Snapshot Builder
+                              |
+                    EvaluationRepository
+                              |
+                         PostgreSQL
 ```
 
-The two paths are deliberately sequential in Phase 3 so infrastructure failure handling remains
-simple and deterministic. The engine does not know whether execution is local or containerized.
-Docker lifecycle details stay in the runner layer; analyzer command and parsing details stay in
-the analysis layer. Routes only translate HTTP data, and test source, host paths, analyzer
-workspaces, and raw tool output never appear in public models.
+Execution and analysis remain deliberately sequential so infrastructure failure handling stays
+simple and deterministic. The engine does not know whether execution is local or containerized,
+and neither runners nor analyzers know about PostgreSQL. `EvaluationService` coordinates the
+result, snapshot builder, and focused repository. Routes only translate HTTP data and never issue
+SQLAlchemy queries.
 
 ## Quick Start
 
-Python 3.13 or newer and Docker are required for the default backend.
+Python 3.13 or newer, Docker, and PostgreSQL 17 are required for the documented persistent setup.
 
 ```bash
 git clone https://github.com/yunusemreyazici/codejudge-ai.git
 cd codejudge-ai
 
-python3.13 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e ".[dev]"
-
+uv sync --extra dev
+docker compose up -d postgres
+export PERSISTENCE_ENABLED=true
+export DATABASE_URL=postgresql+asyncpg://codejudge:codejudge@127.0.0.1:5432/codejudge
+uv run alembic upgrade head
 docker build -t codejudge-python-sandbox:phase2 sandbox/
-uvicorn app.main:app --reload
+uv run uvicorn app.main:app --reload
 ```
-
-The committed `uv.lock` also supports `uv sync --extra dev` for reproducible development installs.
 
 `make sandbox-build` provides the same image-build command. Open
 [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs) for the interactive API.
@@ -161,6 +168,8 @@ and temporary directory are **not** a sandbox. Never use this backend for untrus
 | `STATIC_ANALYSIS_ENABLED` | `true` | Enable deterministic Phase 3 analysis |
 | `STATIC_ANALYSIS_TIMEOUT_SECONDS` | `5.0` | Per-analyzer process timeout |
 | `STATIC_ANALYSIS_OUTPUT_LIMIT_BYTES` | `262144` | Per-analyzer combined output limit |
+| `PERSISTENCE_ENABLED` | `false` | Require successful evaluations to be persisted |
+| `DATABASE_URL` | unset | Required `postgresql+asyncpg://` URL when persistence is enabled |
 
 The enforced Docker timeout is the smaller of the task timeout and
 `SANDBOX_TIMEOUT_SECONDS`.
@@ -171,9 +180,12 @@ The API includes:
 
 - `GET /health` — API process liveness
 - `GET /health/sandbox` — configured execution-backend capability
+- `GET /health/database` — database capability without changing liveness semantics
 - `GET /api/v1/tasks` — public task specifications
 - `GET /api/v1/tasks/{task_id}` — one public task
 - `POST /api/v1/evaluations` — synchronous evaluation
+- `GET /api/v1/evaluations/{evaluation_id}` — full stored historical snapshot
+- `GET /api/v1/evaluations` — newest-first summaries with pagination and filters
 
 Submit the included implementation:
 
@@ -196,6 +208,8 @@ events return structured evaluation data rather than internal stack traces.
 
 ```json
 {
+  "evaluation_id": "d7122434-585c-4a45-8e5d-d7f81ef96636",
+  "created_at": "2026-08-27T12:00:00Z",
   "task_id": "lru-cache",
   "status": "completed",
   "score": 100.0,
@@ -225,6 +239,12 @@ events return structured evaluation data rather than internal stack traces.
   "findings": []
 }
 ```
+
+`evaluation_id` and `created_at` are present when persistence is enabled. List requests accept
+`limit` (maximum 100), `offset`, `task_id`, `language`, `minimum_score`, and `maximum_score`.
+Summaries intentionally omit source and findings; the detail endpoint returns the complete stored
+snapshot. With persistence disabled, evaluation retains Phase 3 behavior and history/database
+capability endpoints clearly report that persistence is not configured.
 
 Top-level `findings` contains execution/test/sandbox outcomes. `analysis.findings` contains static
 tool findings once, with tool, code, severity, category, location, fixability, and confidence where
@@ -270,6 +290,46 @@ Every dimension is clamped to 0–100. Set `STATIC_ANALYSIS_ENABLED=false` only 
 correctness-only legacy evaluation is desired; this omits unavailable dimensions rather than
 fabricating perfect values.
 
+## Persistence & Reproducibility
+
+Every successfully persisted evaluation gets a fresh UUID; identical submissions are separate
+historical events and are never deduplicated. One PostgreSQL row stores relational fields used for
+queries and JSONB snapshots for structured analyzer versions, complexity, execution findings, and
+static findings. Source is preserved byte-for-byte as text, and its SHA-256 and UTF-8 byte size
+are stored alongside it.
+
+The task fingerprint hashes canonical public task metadata plus the trusted-tests fingerprint.
+The tests fingerprint hashes every regular file below the task's tests directory in sorted
+relative-path order, framing both the path and exact file bytes; Python cache and bytecode files
+are excluded, and absolute host paths are never included. Explicit task versions remain stored as
+a separate human-managed identifier.
+
+The reproducibility fingerprint is a canonical SHA-256 identity over the exact source hash, task
+and test fingerprints, analyzer-version map, scoring-policy version, execution backend, sandbox
+image tag and local image ID when available, and the CodeJudge package version. Analyzer versions
+come from trusted installed-package metadata and are cached. Docker image inspection is also
+cached and inability to obtain an image ID does not invalidate an otherwise trustworthy result.
+
+A matching fingerprint means CodeJudge recorded matching evaluation inputs and allowlisted
+environment metadata. It does not prove that CPU scheduling, host kernel behavior, or every source
+of runtime nondeterminism was bit-for-bit identical.
+
+Snapshots are append-only. The public API and repository expose no update or delete operation, and
+a PostgreSQL trigger rejects `UPDATE` and `DELETE` as defense in depth. Historical GET requests
+return stored values—including all five score dimensions—and never recompute scores or execute
+candidate code. Infrastructure failures before a trustworthy result create no fake score-zero
+row. When persistence is required, an atomic insert failure returns a sanitized `503` rather than
+a successful response.
+
+Alembic is the only production schema lifecycle mechanism; application startup never calls
+`create_all()`:
+
+```bash
+uv run alembic upgrade head
+uv run alembic current
+uv run alembic heads
+```
+
 ## Security Warning
 
 Candidate tests are not returned through the API, but they are mounted read-only in the sandbox
@@ -285,7 +345,7 @@ handling, Docker daemon boundary, and remaining risks.
 - **Phase 1 — Core evaluator (implemented):** API, local runner, pytest, scoring, and findings
 - **Phase 2 — Docker sandbox (implemented):** restricted containers and security tests
 - **Phase 3 — Static analysis (implemented):** Ruff, mypy, Bandit, complexity, and weighted scoring
-- **Phase 4 — PostgreSQL persistence (planned):** tasks, submissions, and evaluation history
+- **Phase 4 — PostgreSQL persistence (implemented):** immutable reproducible evaluation snapshots
 - **Phase 5 — Redis + distributed workers (planned):** durable asynchronous workloads
 - **Phase 6 — LLM judge + adversarial tests (planned):** complementary model review
 - **Phase 7 — Multi-model benchmark + leaderboard (planned):** model comparisons
@@ -294,11 +354,11 @@ handling, Docker daemon boundary, and remaining risks.
 ## Development
 
 ```bash
-python -m pip install -e ".[dev]"
-ruff check .
-ruff format --check .
-mypy app
-pytest -v -m "not sandbox"
+uv sync --extra dev
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy app
+uv run pytest -v -m "not sandbox and not database"
 ```
 
 Task definitions live under `app/tasks/definitions`. Their `.yaml` files use JSON syntax, a valid
@@ -307,16 +367,23 @@ YAML subset that keeps loading on the standard library. Add execution behavior t
 
 ## Testing
 
-The ordinary suite does not require Docker. Sandbox tests skip with an explicit capability reason
-when the daemon or image is unavailable.
+The lightweight suite requires neither Docker nor PostgreSQL. Database tests require an explicitly
+named dedicated test database whose name ends in `_test`; fixtures reject other database names.
+Sandbox tests skip with an explicit capability reason when the daemon or image is unavailable.
 
 ```bash
 # Ordinary unit and HTTP integration tests
-pytest -v -m "not sandbox"
+uv run pytest -v -m "not sandbox and not database"
+
+# PostgreSQL tests (use a dedicated database whose name ends in `_test`)
+docker compose exec postgres createdb -U codejudge codejudge_test
+export CODEJUDGE_TEST_DATABASE_URL=postgresql+asyncpg://codejudge:codejudge@127.0.0.1:5432/codejudge_test
+DATABASE_URL="$CODEJUDGE_TEST_DATABASE_URL" uv run alembic upgrade head
+uv run pytest -v -m database tests/database
 
 # Docker integration tests (build the image first)
 make sandbox-build
-pytest -v -m sandbox tests/sandbox
+CODEJUDGE_REQUIRE_DOCKER=1 uv run pytest -v -m sandbox tests/sandbox
 ```
 
 Docker tests verify successful and failing submissions, syntax errors, timeout, cleanup, network

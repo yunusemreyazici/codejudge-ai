@@ -2,7 +2,7 @@
 
 ## Scope and threat model
 
-Phase 3 assumes submitted Python is actively malicious. A candidate may loop forever, allocate
+Phase 4 assumes submitted Python is actively malicious. A candidate may loop forever, allocate
 memory, emit unlimited output, spawn processes, inspect its environment, write files, access task
 tests, attempt network connections, or probe host resources.
 
@@ -73,11 +73,29 @@ sandbox image, and monitor containers carrying the `codejudge.component=sandbox`
 
 ## Task-test visibility and result integrity
 
-Task source is never returned by the HTTP API. The required tests are nevertheless mounted
+Task test source is never returned by the HTTP API. The required tests are nevertheless mounted
 read-only inside the evaluation container, so malicious candidate code can inspect them. Phase 2
 does not guarantee filesystem-level concealment of bundled tests or defend the pytest process from
 all in-container test-tampering techniques. Strong anti-cheating and hidden-test confidentiality
 need a different execution protocol in a later phase.
+
+## Persisted source and database boundary
+
+Phase 4 stores exact submitted source in PostgreSQL so a historical evaluation remains
+explainable. Full source is omitted from list responses but deliberately returned by the UUID
+detail endpoint. Authentication and tenant authorization are outside Phase 4, so operators must
+not expose this API to mutually untrusted users without an access-control layer.
+
+The application does not log submitted source, database URLs, SQL statements, or candidate
+environment data. Persisted execution metadata is allowlisted to the backend, sandbox image tag,
+and local image identity. Host environment secrets are neither copied to sandbox containers nor
+stored in evaluation snapshots. Database exceptions are logged as typed infrastructure failures
+without connection details and are returned to clients as sanitized `503` responses.
+
+Evaluation rows are append-only: there are no update/delete API or repository methods, and a
+database trigger rejects row updates and deletes. Database administrators and schema migrations
+remain trusted and can bypass or replace this policy, so database credentials and migration access
+must be protected separately from ordinary application access.
 
 ## Remaining risks
 
@@ -88,6 +106,10 @@ need a different execution protocol in a later phase.
 - Malicious behavior against Python, pytest, or the trusted entrypoint
 - Host I/O pressure up to the bounded container log and timeout ceilings
 - Local backend execution, which has no security boundary and must not receive untrusted code
+- Exposure of stored candidate source when the unauthenticated Phase 4 API is deployed without an
+  external authorization layer
+- Loss or compromise of PostgreSQL data or credentials; Phase 4 does not add encryption at rest or
+  tenant isolation
 
 Report security issues privately to the repository maintainers rather than opening a public issue
 with exploit details.

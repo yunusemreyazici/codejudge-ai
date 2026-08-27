@@ -7,13 +7,20 @@ from pydantic import BaseModel
 
 from app.evaluator.engine import EvaluationEngine
 from app.evaluator.models import RunnerCapability
+from app.evaluator.service import EvaluationService
 
 
 class HealthResponse(BaseModel):
     status: Literal["ok"]
 
 
-def create_router(engine: EvaluationEngine) -> APIRouter:
+class DatabaseCapability(BaseModel):
+    configured: bool
+    available: bool
+    detail: str
+
+
+def create_router(engine: EvaluationEngine, service: EvaluationService) -> APIRouter:
     router = APIRouter(tags=["health"])
 
     @router.get(
@@ -33,5 +40,24 @@ def create_router(engine: EvaluationEngine) -> APIRouter:
     )
     async def sandbox_health() -> RunnerCapability:
         return await engine.runner_capability("python")
+
+    @router.get(
+        "/health/database",
+        response_model=DatabaseCapability,
+        summary="Check persistence capability",
+    )
+    async def database_health() -> DatabaseCapability:
+        if not service.persistence_configured:
+            return DatabaseCapability(
+                configured=False,
+                available=False,
+                detail="Persistence is disabled.",
+            )
+        available = await service.database_available()
+        return DatabaseCapability(
+            configured=True,
+            available=available,
+            detail="PostgreSQL is available." if available else "PostgreSQL is unavailable.",
+        )
 
     return router

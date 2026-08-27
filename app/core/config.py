@@ -21,6 +21,7 @@ DEFAULT_SANDBOX_OUTPUT_LIMIT_BYTES = 1024 * 1024
 DEFAULT_STATIC_ANALYSIS_ENABLED = True
 DEFAULT_STATIC_ANALYSIS_TIMEOUT_SECONDS = 5.0
 DEFAULT_STATIC_ANALYSIS_OUTPUT_LIMIT_BYTES = 256 * 1024
+DEFAULT_PERSISTENCE_ENABLED = False
 
 
 class ExecutionBackend(StrEnum):
@@ -82,10 +83,22 @@ class Settings:
     static_analysis_enabled: bool = DEFAULT_STATIC_ANALYSIS_ENABLED
     static_analysis_timeout_seconds: float = DEFAULT_STATIC_ANALYSIS_TIMEOUT_SECONDS
     static_analysis_output_limit_bytes: int = DEFAULT_STATIC_ANALYSIS_OUTPUT_LIMIT_BYTES
+    persistence_enabled: bool = DEFAULT_PERSISTENCE_ENABLED
+    database_url: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.persistence_enabled and not self.database_url:
+            raise ValueError("DATABASE_URL is required when persistence is enabled")
+        if self.database_url and not self.database_url.startswith("postgresql+asyncpg://"):
+            raise ValueError("DATABASE_URL must use postgresql+asyncpg")
 
     @classmethod
     def from_env(cls) -> Settings:
         """Build settings from process environment variables."""
+        persistence_enabled = _boolean("PERSISTENCE_ENABLED", DEFAULT_PERSISTENCE_ENABLED)
+        database_url = os.getenv("DATABASE_URL")
+        if database_url is not None:
+            database_url = database_url.strip() or None
         return cls(
             app_name=os.getenv("APP_NAME", DEFAULT_APP_NAME),
             app_env=os.getenv("APP_ENV", DEFAULT_APP_ENV),
@@ -117,4 +130,6 @@ class Settings:
                 "STATIC_ANALYSIS_OUTPUT_LIMIT_BYTES",
                 DEFAULT_STATIC_ANALYSIS_OUTPUT_LIMIT_BYTES,
             ),
+            persistence_enabled=persistence_enabled,
+            database_url=database_url,
         )
