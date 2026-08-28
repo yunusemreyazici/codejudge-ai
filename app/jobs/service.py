@@ -52,6 +52,7 @@ class EvaluationJobService:
         source_hash, source_size = source_identity(request.code)
         tests_hash = tests_fingerprint(task)
         task_hash = task_fingerprint(task, tests_hash)
+        ai_identity = self._evaluation_service.ai_identity(task)
         (
             execution,
             analyzers,
@@ -81,6 +82,7 @@ class EvaluationJobService:
             expected_analyzer_versions=analyzers,
             expected_scoring_policy_version=scoring_policy,
             expected_codejudge_version=application_version,
+            expected_ai_identity=ai_identity,
         )
         try:
             stored, _ = await self._jobs.create(job)

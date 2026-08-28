@@ -56,6 +56,27 @@ class EvaluationRecord(Base):
         ),
         CheckConstraint("final_score BETWEEN 0 AND 100", name="ck_evaluations_final_score"),
         CheckConstraint(
+            "ai_status IS NULL OR ai_status IN "
+            "('disabled', 'completed', 'partial', 'unavailable', 'disputed', 'skipped')",
+            name="ck_evaluations_ai_status",
+        ),
+        CheckConstraint(
+            "ai_score IS NULL OR ai_score BETWEEN 0 AND 100",
+            name="ck_evaluations_ai_score",
+        ),
+        CheckConstraint(
+            "judge_score IS NULL OR judge_score BETWEEN 0 AND 100",
+            name="ck_evaluations_judge_score",
+        ),
+        CheckConstraint(
+            "adversarial_robustness IS NULL OR adversarial_robustness BETWEEN 0 AND 100",
+            name="ck_evaluations_adversarial_robustness",
+        ),
+        CheckConstraint(
+            "ai_reproducibility_fingerprint IS NULL OR length(ai_reproducibility_fingerprint) = 64",
+            name="ck_evaluations_ai_fingerprint",
+        ),
+        CheckConstraint(
             "code_quality_score IS NULL OR code_quality_score BETWEEN 0 AND 100",
             name="ck_evaluations_code_quality_score",
         ),
@@ -75,6 +96,7 @@ class EvaluationRecord(Base):
         Index("ix_evaluations_task_id", "task_id"),
         Index("ix_evaluations_source_hash", "source_hash"),
         Index("ix_evaluations_final_score", "final_score"),
+        Index("ix_evaluations_ai_status", "ai_status"),
     )
 
     evaluation_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), primary_key=True)
@@ -118,6 +140,15 @@ class EvaluationRecord(Base):
     execution_findings: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
     analysis_findings: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
     reproducibility_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    ai_status: Mapped[str | None] = mapped_column(String(32))
+    ai_reason: Mapped[str | None] = mapped_column(String(128))
+    ai_score: Mapped[float | None] = mapped_column(Float)
+    judge_score: Mapped[float | None] = mapped_column(Float)
+    adversarial_robustness: Mapped[float | None] = mapped_column(Float)
+    ai_reproducibility_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    ai_judge_results: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    ai_adversarial_results: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    ai_provenance: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
 
 class EvaluationJobRecord(Base):
@@ -188,6 +219,7 @@ class EvaluationJobRecord(Base):
     expected_analyzer_versions: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False)
     expected_scoring_policy_version: Mapped[str] = mapped_column(Text, nullable=False)
     expected_codejudge_version: Mapped[str] = mapped_column(Text, nullable=False)
+    expected_ai_identity: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
 
 
 class OutboxEventRecord(Base):

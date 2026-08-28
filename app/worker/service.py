@@ -84,6 +84,7 @@ class EvaluationWorker:
                 request,
                 evaluation_id=claimed.evaluation_id,
                 created_at=claimed.created_at,
+                expected_ai_identity=claimed.expected_ai_identity,
             )
             transition_recorded = await self._jobs.complete(
                 claimed.evaluation_id,

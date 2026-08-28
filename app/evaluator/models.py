@@ -8,6 +8,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.ai.models import AIAssessment
+
 
 class EvaluationStatus(StrEnum):
     COMPLETED = "completed"
@@ -132,6 +134,7 @@ class EvaluationResult(BaseModel):
     score_breakdown: ScoreBreakdown
     analysis: StaticAnalysisResult | None = None
     findings: list[Finding] = Field(default_factory=list)
+    ai_assessment: AIAssessment | None = None
 
 
 class RunnerResult(BaseModel):

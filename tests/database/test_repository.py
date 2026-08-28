@@ -5,6 +5,14 @@ import pytest
 from sqlalchemy import update
 from sqlalchemy.exc import DBAPIError
 
+from app.ai.models import (
+    AdversarialResult,
+    AIAssessment,
+    AIComponentStatus,
+    AIProvenance,
+    AIStatus,
+    JudgeResult,
+)
 from app.db.models import EvaluationRecord
 from app.snapshots.fingerprints import source_identity
 from tests.database.conftest import DatabaseHarness
@@ -118,3 +126,62 @@ async def test_database_rejects_snapshot_mutation(
             )
 
     assert await database_harness.repository.get(snapshot.evaluation_id) == snapshot
+
+
+async def test_ai_artifacts_round_trip_and_summary_remains_compact(
+    database_harness: DatabaseHarness,
+) -> None:
+    assessment = AIAssessment(
+        status=AIStatus.COMPLETED,
+        ai_score=82,
+        judge_score=80,
+        judge_results=[
+            JudgeResult(
+                provider_id="fake-provider",
+                model="judge-a",
+                prompt_version="1",
+                prompt_hash="1" * 64,
+                rendered_input_hash="2" * 64,
+                score=80,
+                confidence=0.8,
+                dimensions={"requirements_adherence": 80},
+                findings=[],
+                summary="Safe summary.",
+                latency_ms=5,
+                raw_response_hash="3" * 64,
+            )
+        ],
+        adversarial_tests=AdversarialResult(
+            status=AIComponentStatus.COMPLETED,
+            generated=1,
+            structurally_accepted=1,
+            reference_valid=1,
+            candidate_passed=1,
+            candidate_failed=0,
+            robustness_score=100,
+        ),
+        provenance=AIProvenance(
+            policy_version="1",
+            judge_prompt_version="1",
+            judge_prompt_hash="1" * 64,
+            adversarial_prompt_version="1",
+            adversarial_prompt_hash="4" * 64,
+            provider_id="fake-provider",
+            judge_models=["judge-a"],
+            adversarial_model="generator-a",
+            temperature=0,
+            top_p=1,
+            max_output_tokens=2000,
+            reference_fingerprint="5" * 64,
+        ),
+        ai_reproducibility_fingerprint="6" * 64,
+    )
+    snapshot = snapshot_fixture().model_copy(update={"ai_assessment": assessment})
+    await database_harness.repository.create(snapshot)
+
+    stored = await database_harness.repository.get(snapshot.evaluation_id)
+    summaries = await database_harness.repository.list(limit=10, offset=0)
+    assert stored == snapshot
+    assert summaries[0].ai_status is AIStatus.COMPLETED
+    assert summaries[0].ai_score == 82
+    assert not hasattr(summaries[0], "judge_results")

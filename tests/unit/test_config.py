@@ -8,6 +8,7 @@ def test_settings_default_to_docker_backend() -> None:
     assert Settings().static_analysis_enabled is True
     assert Settings().persistence_enabled is False
     assert Settings().evaluation_mode is EvaluationMode.SYNC
+    assert Settings().llm_enabled is False
 
 
 def test_settings_load_typed_sandbox_values(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -109,4 +110,52 @@ def test_async_mode_requires_persistence_and_redis() -> None:
             evaluation_mode=EvaluationMode.ASYNC,
             persistence_enabled=True,
             database_url="postgresql+asyncpg://codejudge:secret@localhost/codejudge_test",
+        )
+
+
+def test_llm_settings_are_typed_and_credentials_are_not_part_of_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LLM_ENABLED", "true")
+    monkeypatch.setenv("PERSISTENCE_ENABLED", "true")
+    monkeypatch.setenv(
+        "DATABASE_URL", "postgresql+asyncpg://codejudge:secret@localhost/codejudge_test"
+    )
+    monkeypatch.setenv("LLM_BASE_URL", "https://provider.invalid/v1/")
+    monkeypatch.setenv("LLM_API_KEY", "secret")
+    monkeypatch.setenv("LLM_PROVIDER_ID", "gateway")
+    monkeypatch.setenv("LLM_JUDGE_MODELS", "judge-a, judge-b")
+    monkeypatch.setenv("LLM_ADVERSARIAL_MODEL", "generator-a")
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "12")
+    monkeypatch.setenv("LLM_MAX_ATTEMPTS", "2")
+    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "500")
+    monkeypatch.setenv("LLM_MAX_INPUT_BYTES", "9000")
+    monkeypatch.setenv("LLM_MAX_ADVERSARIAL_TESTS", "3")
+
+    settings = Settings.from_env()
+    assert settings.llm_enabled
+    assert settings.llm_base_url == "https://provider.invalid/v1"
+    assert settings.llm_judge_models == ("judge-a", "judge-b")
+    assert settings.llm_timeout_seconds == 12
+    assert settings.llm_max_input_bytes == 9000
+    assert settings.llm_max_adversarial_tests == 3
+
+
+def test_llm_enabled_requires_provider_configuration() -> None:
+    with pytest.raises(ValueError, match="LLM_BASE_URL"):
+        Settings(
+            persistence_enabled=True,
+            database_url="postgresql+asyncpg://codejudge:secret@localhost/codejudge_test",
+            llm_enabled=True,
+        )
+
+
+def test_llm_enabled_requires_persistence() -> None:
+    with pytest.raises(ValueError, match="PERSISTENCE_ENABLED"):
+        Settings(
+            llm_enabled=True,
+            llm_base_url="https://provider.invalid/v1",
+            llm_api_key="secret",
+            llm_judge_models=("judge-a",),
+            llm_adversarial_model="generator-a",
         )

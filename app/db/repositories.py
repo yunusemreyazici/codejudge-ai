@@ -10,6 +10,7 @@ from sqlalchemy import Select, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.ai.models import AdversarialResult, AIAssessment, AIProvenance, AIStatus, JudgeResult
 from app.db.models import EvaluationRecord
 from app.evaluator.models import (
     ComplexityMetrics,
@@ -134,6 +135,8 @@ class SqlAlchemyEvaluationRepository:
                     security=row.security_score,
                     complexity=row.complexity_score,
                 ),
+                ai_status=None if row.ai_status is None else AIStatus(row.ai_status),
+                ai_score=row.ai_score,
             )
             for row in rows
         ]
@@ -163,11 +166,14 @@ def _summary_query() -> Select[tuple[object, ...]]:
         EvaluationRecord.type_safety_score,
         EvaluationRecord.security_score,
         EvaluationRecord.complexity_score,
+        EvaluationRecord.ai_status,
+        EvaluationRecord.ai_score,
     )
 
 
 def evaluation_record_from_snapshot(snapshot: EvaluationSnapshot) -> EvaluationRecord:
     breakdown = snapshot.score_breakdown
+    ai = snapshot.ai_assessment
     return EvaluationRecord(
         evaluation_id=snapshot.evaluation_id,
         created_at=snapshot.created_at,
@@ -212,10 +218,58 @@ def evaluation_record_from_snapshot(snapshot: EvaluationSnapshot) -> EvaluationR
             for finding in snapshot.analysis_findings
         ],
         reproducibility_fingerprint=snapshot.reproducibility_fingerprint,
+        ai_status=None if ai is None else ai.status,
+        ai_reason=None if ai is None else ai.reason,
+        ai_score=None if ai is None else ai.ai_score,
+        judge_score=None if ai is None else ai.judge_score,
+        adversarial_robustness=(
+            None
+            if ai is None or ai.adversarial_tests is None
+            else ai.adversarial_tests.robustness_score
+        ),
+        ai_reproducibility_fingerprint=(None if ai is None else ai.ai_reproducibility_fingerprint),
+        ai_judge_results=(
+            None
+            if ai is None
+            else {
+                "disputed": ai.judge_disputed,
+                "disagreement_spread": ai.judge_disagreement_spread,
+                "results": [item.model_dump(mode="json") for item in ai.judge_results],
+            }
+        ),
+        ai_adversarial_results=(
+            None
+            if ai is None or ai.adversarial_tests is None
+            else ai.adversarial_tests.model_dump(mode="json")
+        ),
+        ai_provenance=None if ai is None else ai.provenance.model_dump(mode="json"),
     )
 
 
 def _snapshot_from_record(record: EvaluationRecord) -> EvaluationSnapshot:
+    ai_assessment = None
+    if record.ai_status is not None:
+        if record.ai_provenance is None or record.ai_reproducibility_fingerprint is None:
+            raise PersistenceError("Stored AI assessment metadata is incomplete.")
+        ai_assessment = AIAssessment(
+            status=AIStatus(record.ai_status),
+            reason=record.ai_reason,
+            ai_score=record.ai_score,
+            judge_score=record.judge_score,
+            judge_disputed=_stored_disputed(record.ai_judge_results, record.ai_status),
+            judge_disagreement_spread=_stored_disagreement(record.ai_judge_results),
+            judge_results=[
+                JudgeResult.model_validate(item)
+                for item in _stored_judge_results(record.ai_judge_results)
+            ],
+            adversarial_tests=(
+                None
+                if record.ai_adversarial_results is None
+                else AdversarialResult.model_validate(record.ai_adversarial_results)
+            ),
+            provenance=AIProvenance.model_validate(record.ai_provenance),
+            ai_reproducibility_fingerprint=record.ai_reproducibility_fingerprint,
+        )
     return EvaluationSnapshot(
         evaluation_id=record.evaluation_id,
         created_at=record.created_at,
@@ -262,4 +316,27 @@ def _snapshot_from_record(record: EvaluationRecord) -> EvaluationSnapshot:
         execution_findings=[Finding.model_validate(item) for item in record.execution_findings],
         analysis_findings=[Finding.model_validate(item) for item in record.analysis_findings],
         reproducibility_fingerprint=record.reproducibility_fingerprint,
+        ai_assessment=ai_assessment,
     )
+
+
+def _stored_judge_results(artifact: dict[str, object] | None) -> list[object]:
+    if artifact is None:
+        return []
+    results = artifact.get("results")
+    return results if isinstance(results, list) else []
+
+
+def _stored_disputed(artifact: dict[str, object] | None, status: str) -> bool:
+    if artifact is not None and isinstance(artifact.get("disputed"), bool):
+        return bool(artifact["disputed"])
+    return status == AIStatus.DISPUTED
+
+
+def _stored_disagreement(artifact: dict[str, object] | None) -> float | None:
+    if artifact is None:
+        return None
+    value = artifact.get("disagreement_spread")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None

@@ -7,6 +7,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.ai.models import AIAssessment, AIStatus
 from app.evaluator.models import (
     ComplexityMetrics,
     EvaluationResult,
@@ -56,6 +57,7 @@ class EvaluationSnapshot(BaseModel):
     execution_findings: list[Finding] = Field(default_factory=list)
     analysis_findings: list[Finding] = Field(default_factory=list)
     reproducibility_fingerprint: str = Field(min_length=64, max_length=64)
+    ai_assessment: AIAssessment | None = None
 
 
 class EvaluationDetail(EvaluationResult):
@@ -110,6 +112,7 @@ class EvaluationDetail(EvaluationResult):
             analysis=analysis,
             findings=snapshot.execution_findings,
             reproducibility_fingerprint=snapshot.reproducibility_fingerprint,
+            ai_assessment=snapshot.ai_assessment,
         )
 
 
@@ -123,3 +126,5 @@ class EvaluationSummary(BaseModel):
     status: EvaluationStatus
     score: float = Field(ge=0, le=100)
     score_breakdown: ScoreBreakdown
+    ai_status: AIStatus | None = None
+    ai_score: float | None = Field(default=None, ge=0, le=100)

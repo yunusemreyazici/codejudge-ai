@@ -2,9 +2,9 @@
 
 > A production-oriented evaluation framework for testing and scoring AI-generated code.
 
-CodeJudge AI is an open-source backend for reproducible code evaluation. Phase 5 adds durable
-asynchronous jobs and distributed workers while retaining the restricted Docker execution path,
-deterministic analysis, and immutable PostgreSQL snapshots.
+CodeJudge AI is an open-source backend for reproducible code evaluation. Phase 6 adds a bounded,
+versioned LLM judge and reference-validated adversarial tests while retaining authoritative
+deterministic scoring, durable distributed workers, and immutable PostgreSQL snapshots.
 
 > [!CAUTION]
 > Docker materially strengthens isolation, but it is **not a perfect security boundary**. The
@@ -21,8 +21,9 @@ named, disposable container with explicit network, filesystem, privilege, proces
 time, and output restrictions. Static analyzers parse the single temporary `solution.py`; they do
 not import or execute it.
 
-The same candidate, task version, test suite, tool versions, and scoring policy produce the same
-result. No LLM is required or consulted.
+The deterministic score remains defined entirely by the candidate, trusted task/tests, tool
+versions, and deterministic scoring policy. AI assessment is optional, separately identified,
+and may be unavailable without invalidating a deterministic result.
 
 ## Why this project exists
 
@@ -60,6 +61,11 @@ Implemented:
 - Redis Streams consumer-group delivery with acknowledgements and stale-message reclaim
 - Worker leases, bounded retries, deterministic backoff, and stale-job recovery
 - Idempotent terminal completion and optional HTTP `Idempotency-Key` support
+- Optional OpenAI-compatible structured LLM provider with bounded requests and transient retries
+- Versioned judge/adversarial prompts, strict local schemas, provenance, and separate AI scoring
+- Optional median judge panels with visible disagreement and `disputed` status
+- Structurally validated AI-generated tests checked against a private trusted reference in Docker
+- AI identity capture on queued jobs and safe AI-only skipping after deployment changes
 - Alembic migrations plus unit, PostgreSQL, Redis, worker, and real Docker tests in CI
 
 Planned features are listed in the roadmap and are not part of the current implementation.
@@ -67,17 +73,21 @@ Planned features are listed in the roadmap and are not part of the current imple
 ## Architecture
 
 ```text
-Client -> FastAPI -> PostgreSQL Job + Outbox -> Outbox Publisher -> Redis Stream
-                                                                    |
-                                                               Worker Pool
-                                                               /         \
-                                                        Docker Runner   Analysis
-                                                               \         /
-                                                                Score Engine
-                                                                     |
-                                                           Immutable Snapshot
-                                                                     |
-                                                                PostgreSQL
+Client -> FastAPI -> PostgreSQL Job + Outbox -> Redis Stream -> Worker
+                                                                |
+                         +--------------------------------------+-------------------+
+                         |                                                          |
+              Deterministic Pipeline                                        AI Pipeline
+              Docker + analyzers                               Judge + adversarial generator
+                         |                                             |            |
+              Deterministic Score                              strict schemas       v
+                         |                                              reference Docker
+                         |                                              candidate Docker
+                         +--------------------------------------+-------------------+
+                                                                |
+                                                Immutable deterministic + AI snapshot
+                                                                |
+                                                           PostgreSQL
 ```
 
 Execution and analysis remain deliberately sequential so infrastructure failure handling stays
@@ -181,6 +191,18 @@ and temporary directory are **not** a sandbox. Never use this backend for untrus
 | `WORKER_MAX_ATTEMPTS` | `3` | Maximum infrastructure attempts |
 | `OUTBOX_POLL_INTERVAL_SECONDS` | `1` | Dispatcher and maintenance interval |
 | `RETRY_BASE_DELAY_SECONDS` | `5` | Backoff base; successive failed attempts yield 5, 15, then 45 seconds |
+| `LLM_ENABLED` | `false` | Enable persisted supplemental AI assessment; requires persistence |
+| `LLM_BASE_URL` | unset | OpenAI-compatible API base URL; never persisted |
+| `LLM_API_KEY` | unset | Provider secret; never persisted or logged |
+| `LLM_PROVIDER_ID` | `default-openai-compatible` | Non-secret logical provider identity |
+| `LLM_JUDGE_MODEL(S)` | unset | One model or comma-separated optional judge panel |
+| `LLM_ADVERSARIAL_MODEL` | unset | Structured adversarial-test generator model |
+| `LLM_TIMEOUT_SECONDS` | `30` | Hard timeout for each provider attempt |
+| `LLM_MAX_ATTEMPTS` | `2` | Provider transient attempts; never whole-job retries |
+| `LLM_MAX_OUTPUT_TOKENS` | `2000` | Explicit provider generation ceiling |
+| `LLM_MAX_INPUT_BYTES` | `100000` | Skip AI instead of silently truncating input |
+| `LLM_MAX_RESPONSE_BYTES` | `262144` | HTTP response cap before parsing |
+| `LLM_MAX_ADVERSARIAL_TESTS` | `5` | Generated-test count ceiling |
 
 The enforced Docker timeout is the smaller of the task timeout and
 `SANDBOX_TIMEOUT_SECONDS`.
@@ -252,6 +274,44 @@ task/test fingerprints, analyzer versions, scoring-policy version, CodeJudge ver
 execution image identity with the current runtime. A mismatch becomes a non-retryable integrity
 failure rather than silently running changed evaluation material. Phase 5 does not support
 user-facing cancellation.
+
+## AI-Assisted Evaluation
+
+AI evaluation is supplemental. The existing top-level `score` and every field in
+`score_breakdown` retain their Phase 3 meaning and cannot be modified by judge output or generated
+tests. Phase 6 stores a separate `ai_assessment` with `disabled`, `completed`, `partial`,
+`unavailable`, `disputed`, or `skipped` status and an optional `ai_score`.
+
+The judge receives only the public task, exact candidate source as explicitly untrusted JSON data,
+and structured deterministic evidence. It never receives hidden tests, the reference solution,
+infrastructure details, credentials, or tools. Strict local schemas reject malformed scores,
+unknown fields, and oversized findings. Impossible optional source lines are removed. CodeJudge,
+not the model, computes judge scores from versioned dimensions. Optional panels store every judge,
+use the median, and suppress `ai_score` when the score spread exceeds the configured threshold.
+
+Adversarial evaluation follows a bounded pipeline:
+
+```text
+generate -> structural policy validation -> trusted reference Docker run -> candidate Docker run
+```
+
+Generated tests are AI-produced, not official hidden tests. They are deduplicated and checked for
+syntax, naming, size, plugin declarations, and prohibited imports, but this validator is a quality
+layer rather than the security boundary. Test code runs only in the same restricted Docker model
+used for candidate execution. A test counts only after passing the private packaged reference
+implementation; zero valid tests produces no robustness score. Generated tests never change
+deterministic correctness or the top-level score.
+
+AI provider timeouts, rate limits, selected server errors, malformed output, refusals, or generator
+failures do not retry or fail a completed deterministic evaluation. They produce partial or
+unavailable AI metadata and the worker commits the deterministic snapshot normally. If queued AI
+prompt/model/policy/reference identity differs at execution, deterministic evaluation proceeds and
+AI is recorded as `skipped` with `ai_identity_mismatch`.
+
+Candidate source can contain natural-language prompt injection. CodeJudge keeps it out of system
+instructions, serializes it under an untrusted-data field, locally validates every response, gives
+the model no tools, and provides no path for AI results to mutate deterministic evidence. These
+controls limit impact but do not prove that model-level prompt injection is completely solved.
 
 ## Example Evaluation
 
@@ -339,6 +399,10 @@ Every dimension is clamped to 0–100. Set `STATIC_ANALYSIS_ENABLED=false` only 
 correctness-only legacy evaluation is desired; this omits unavailable dimensions rather than
 fabricating perfect values.
 
+The AI score is separate: when both components are valid, policy version `1` computes
+`judge_score × 0.70 + adversarial_robustness × 0.30`. Missing or disputed components produce no
+aggregate AI score; weights are never renormalized. **Deterministic score ≠ AI score.**
+
 ## Persistence & Reproducibility
 
 Every successfully persisted evaluation gets a fresh UUID; identical submissions are separate
@@ -362,6 +426,14 @@ cached and inability to obtain an image ID does not invalidate an otherwise trus
 A matching fingerprint means CodeJudge recorded matching evaluation inputs and allowlisted
 environment metadata. It does not prove that CPU scheduling, host kernel behavior, or every source
 of runtime nondeterminism was bit-for-bit identical.
+
+Phase 6 adds a separate AI reproducibility fingerprint over the deterministic fingerprint,
+AI-policy and prompt hashes, logical provider/model identities, non-secret generation parameters,
+panel identity, response hashes, and trusted-reference fingerprint. Per-call artifacts retain
+model, prompt version/hash, rendered-input hash, token usage where supplied, latency, provider
+response ID, and normalized result. API keys and credential-bearing URLs are excluded. Matching AI
+fingerprints improve explainability but do not guarantee identical future output: hosted models
+can be nondeterministic and providers can change their implementation.
 
 Snapshots are append-only. The public API and repository expose no update or delete operation, and
 a PostgreSQL trigger rejects `UPDATE` and `DELETE` as defense in depth. Historical GET requests
@@ -396,7 +468,7 @@ handling, Docker daemon boundary, and remaining risks.
 - **Phase 3 — Static analysis (implemented):** Ruff, mypy, Bandit, complexity, and weighted scoring
 - **Phase 4 — PostgreSQL persistence (implemented):** immutable reproducible evaluation snapshots
 - **Phase 5 — Redis + distributed workers (implemented):** durable at-least-once asynchronous jobs
-- **Phase 6 — LLM judge + adversarial tests (planned):** complementary model review
+- **Phase 6 — LLM judge + adversarial tests (implemented):** versioned review and validated tests
 - **Phase 7 — Multi-model benchmark + leaderboard (planned):** model comparisons
 - **Phase 8 — Observability + production hardening (planned):** tracing, metrics, and operations
 
@@ -437,6 +509,10 @@ uv run pytest -v -m "queue and not worker_e2e" tests/queue
 # Docker integration tests (build the image first)
 make sandbox-build
 CODEJUDGE_REQUIRE_DOCKER=1 uv run pytest -v -m sandbox tests/sandbox
+
+# Phase 6 contracts and fake-LLM real-Docker worker E2E
+uv run pytest -v -m ai tests/ai
+CODEJUDGE_REQUIRE_DOCKER=1 uv run pytest -v tests/queue/test_ai_worker_e2e.py
 
 # PostgreSQL + Redis + real Docker worker flow
 CODEJUDGE_REQUIRE_DOCKER=1 uv run pytest -v tests/queue/test_worker_e2e.py

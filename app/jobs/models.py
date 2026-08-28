@@ -8,6 +8,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.ai.models import AIIdentity, AIStatus
 from app.evaluator.models import ScoreBreakdown
 from app.snapshots.models import ExecutionEnvironmentSnapshot
 
@@ -56,6 +57,7 @@ class EvaluationJob(BaseModel):
     expected_analyzer_versions: dict[str, str]
     expected_scoring_policy_version: str
     expected_codejudge_version: str
+    expected_ai_identity: AIIdentity
 
 
 class JobError(BaseModel):
@@ -123,6 +125,8 @@ class EvaluationJobSummary(BaseModel):
     attempt_count: int
     score: float | None = Field(default=None, ge=0, le=100)
     score_breakdown: ScoreBreakdown | None = None
+    ai_status: AIStatus | None = None
+    ai_score: float | None = Field(default=None, ge=0, le=100)
 
 
 class OutboxEvent(BaseModel):

@@ -21,13 +21,13 @@ async def test_database_was_created_by_current_migration_head(
         jobs_table = await connection.scalar(text("SELECT to_regclass('public.evaluation_jobs')"))
         outbox_table = await connection.scalar(text("SELECT to_regclass('public.outbox_events')"))
 
-    assert revision == "20260827_0002"
+    assert revision == "20260827_0003"
     assert table_name == "evaluations"
     assert jobs_table == "evaluation_jobs"
     assert outbox_table == "outbox_events"
 
 
-async def test_phase4_to_phase5_downgrade_upgrade_preserves_snapshot(
+async def test_phase4_through_phase6_downgrade_upgrade_preserves_snapshot(
     database_harness: DatabaseHarness,
 ) -> None:
     snapshot = snapshot_fixture()
@@ -49,3 +49,26 @@ async def test_phase4_to_phase5_downgrade_upgrade_preserves_snapshot(
 
     await asyncio.to_thread(command.upgrade, config, "head")
     assert await database_harness.repository.get(snapshot.evaluation_id) == snapshot
+
+
+async def test_phase5_to_phase6_upgrade_preserves_existing_snapshot(
+    database_harness: DatabaseHarness,
+) -> None:
+    snapshot = snapshot_fixture()
+    await database_harness.repository.create(snapshot)
+    config = Config(str(Path(__file__).parents[2] / "alembic.ini"))
+
+    await asyncio.to_thread(command.downgrade, config, "20260827_0002")
+    async with database_harness.database.engine.connect() as connection:
+        revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
+        stored = await connection.scalar(
+            text("SELECT evaluation_id FROM evaluations WHERE evaluation_id = :evaluation_id"),
+            {"evaluation_id": snapshot.evaluation_id},
+        )
+    assert revision == "20260827_0002"
+    assert stored == snapshot.evaluation_id
+
+    await asyncio.to_thread(command.upgrade, config, "head")
+    restored = await database_harness.repository.get(snapshot.evaluation_id)
+    assert restored == snapshot
+    assert restored is not None and restored.ai_assessment is None

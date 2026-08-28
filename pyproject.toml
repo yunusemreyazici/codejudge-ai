@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codejudge-ai"
-version = "0.5.0"
+version = "0.6.0"
 description = "A deterministic evaluation framework for testing and scoring code submissions."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -15,6 +15,7 @@ dependencies = [
     "asyncpg>=0.30,<1.0",
     "bandit>=1.8,<2.0",
     "fastapi>=0.116,<1.0",
+    "httpx>=0.28,<1.0",
     "mypy>=1.17,<2.0",
     "pydantic>=2.11,<3.0",
     "pytest>=8.4,<10.0",
@@ -30,7 +31,6 @@ codejudge-worker = "app.worker.main:main"
 
 [project.optional-dependencies]
 dev = [
-    "httpx>=0.28,<1.0",
     "pytest-asyncio>=1.1,<2.0",
 ]
 
@@ -46,6 +46,7 @@ app = [
     "db/migrations/versions/*.py",
     "tasks/definitions/**/*.yaml",
     "tasks/definitions/**/tests/*.py",
+    "tasks/definitions/**/reference/*.py",
 ]
 
 [tool.pytest.ini_options]
@@ -57,6 +58,8 @@ markers = [
     "queue: requires a real Redis service",
     "sandbox: requires a running Docker daemon and the Phase 2 sandbox image",
     "worker_e2e: requires PostgreSQL, Redis, and the Docker sandbox image",
+    "ai: exercises the Phase 6 AI assessment layer without an external provider",
+    "ai_e2e: requires PostgreSQL, Redis, and the Docker sandbox image with a fake LLM",
 ]
 
 [tool.ruff]

@@ -9,6 +9,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
+from app.ai.factory import create_ai_service
+from app.ai.service import AIService
 from app.analysis.factory import create_static_analysis_engine
 from app.api.router import create_api_router
 from app.core.config import EvaluationMode, Settings
@@ -37,15 +39,17 @@ def create_app(
     job_repository: EvaluationJobRepository | None = None,
     evaluation_queue: EvaluationQueue | None = None,
     execution_metadata: ExecutionMetadataProvider | None = None,
+    ai_service: AIService | None = None,
 ) -> FastAPI:
     resolved_settings = settings or Settings.from_env()
     configure_logging(resolved_settings.log_level)
     resolved_registry = registry or TaskRegistry.default(
         resolved_settings.default_execution_timeout
     )
+    resolved_runner = python_runner or create_python_runner(resolved_settings)
     engine = EvaluationEngine(
         registry=resolved_registry,
-        runners={"python": python_runner or create_python_runner(resolved_settings)},
+        runners={"python": resolved_runner},
         max_code_size=resolved_settings.max_code_size,
         analysis_engine=(
             create_static_analysis_engine(resolved_settings)
@@ -75,10 +79,13 @@ def create_app(
         and database is not None
     ):
         resolved_job_repository = SqlAlchemyEvaluationJobRepository(database.session_factory)
+    resolved_ai_service = ai_service or create_ai_service(resolved_settings, resolved_runner)
+    owns_ai_service = ai_service is None
     service = EvaluationService(
         engine=engine,
         execution_metadata=execution_metadata or ExecutionMetadataCollector(resolved_settings),
         repository=resolved_repository,
+        ai_service=resolved_ai_service,
     )
     resolved_queue = evaluation_queue
     owns_queue = False
@@ -105,16 +112,18 @@ def create_app(
         finally:
             if owns_queue and resolved_queue is not None:
                 await resolved_queue.close()
+            if owns_ai_service:
+                await resolved_ai_service.close()
             if database is not None:
                 await database.dispose()
 
     application = FastAPI(
         title=resolved_settings.app_name,
         version=codejudge_version(),
-        summary="Durable asynchronous code evaluation with immutable history",
+        summary="Deterministic code evaluation with supplemental AI assessment",
         description=(
-            "CodeJudge AI Phase 5: durable PostgreSQL jobs, Redis Streams delivery, distributed "
-            "workers, and immutable reproducible terminal snapshots."
+            "CodeJudge AI Phase 6: authoritative deterministic scoring with a separate, bounded, "
+            "versioned, and provenance-aware AI assessment."
         ),
         lifespan=lifespan,
     )
@@ -130,6 +139,7 @@ def create_app(
     )
     application.state.database = database
     application.state.evaluation_queue = resolved_queue
+    application.state.ai_service = resolved_ai_service
 
     @application.exception_handler(Exception)
     async def unexpected_error_handler(request: Request, error: Exception) -> JSONResponse:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
+from app.ai.models import AIIdentity
 from app.evaluator.models import (
     ComplexityMetrics,
     EvaluationRequest,
@@ -59,7 +60,22 @@ def job_fixture(
         expected_execution=ExecutionEnvironmentSnapshot(backend="local"),
         expected_analyzer_versions={},
         expected_scoring_policy_version="1",
-        expected_codejudge_version="0.5.0",
+        expected_codejudge_version="0.6.0",
+        expected_ai_identity=AIIdentity(
+            enabled=False,
+            policy_version="1",
+            judge_prompt_version="1",
+            judge_prompt_hash="0" * 64,
+            adversarial_prompt_version="1",
+            adversarial_prompt_hash="0" * 64,
+            provider_id=None,
+            judge_models=(),
+            adversarial_model=None,
+            temperature=0,
+            top_p=1,
+            max_output_tokens=2000,
+            reference_fingerprint=None,
+        ),
     )
 
 

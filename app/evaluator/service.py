@@ -5,6 +5,15 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+from app.ai.models import AIIdentity
+from app.ai.prompts import (
+    ADVERSARIAL_PROMPT_HASH,
+    ADVERSARIAL_PROMPT_VERSION,
+    AI_SCORING_POLICY_VERSION,
+    JUDGE_PROMPT_HASH,
+    JUDGE_PROMPT_VERSION,
+)
+from app.ai.service import AIService, reference_fingerprint
 from app.core.version import codejudge_version
 from app.db.repositories import EvaluationRepository, PersistenceError
 from app.evaluator.engine import EvaluationEngine, EvaluationInfrastructureError
@@ -34,10 +43,12 @@ class EvaluationService:
         engine: EvaluationEngine,
         execution_metadata: ExecutionMetadataProvider,
         repository: EvaluationRepository | None = None,
+        ai_service: AIService | None = None,
     ) -> None:
         self._engine = engine
         self._execution_metadata = execution_metadata
         self._repository = repository
+        self._ai_service = ai_service
 
     @property
     def persistence_configured(self) -> bool:
@@ -67,6 +78,7 @@ class EvaluationService:
             score_breakdown=stored.score_breakdown,
             analysis=EvaluationDetail.from_snapshot(stored).analysis,
             findings=stored.execution_findings,
+            ai_assessment=stored.ai_assessment,
         )
 
     def prepare_request(self, request: EvaluationRequest) -> RegisteredTask:
@@ -88,12 +100,13 @@ class EvaluationService:
         *,
         evaluation_id: UUID,
         created_at: datetime,
+        expected_ai_identity: AIIdentity | None = None,
     ) -> EvaluationSnapshot:
         outcome = await self._engine.evaluate_outcome(request)
         completed_at = datetime.now(UTC)
         execution = await self._execution_metadata.snapshot()
         versions = canonical_analyzer_versions() if outcome.result.analysis is not None else {}
-        return build_evaluation_snapshot(
+        snapshot = build_evaluation_snapshot(
             request=request,
             task=outcome.task,
             result=outcome.result,
@@ -105,6 +118,33 @@ class EvaluationService:
             codejudge_version=codejudge_version(),
             scoring_policy_version=SCORING_POLICY_VERSION,
             evaluation_id=evaluation_id,
+        )
+        if self._ai_service is not None:
+            assessment = await self._ai_service.assess(
+                snapshot=snapshot,
+                task=outcome.task,
+                expected_identity=expected_ai_identity,
+            )
+            snapshot = snapshot.model_copy(update={"ai_assessment": assessment})
+        return snapshot
+
+    def ai_identity(self, task: RegisteredTask) -> AIIdentity:
+        if self._ai_service is not None:
+            return self._ai_service.identity(task)
+        return AIIdentity(
+            enabled=False,
+            policy_version=AI_SCORING_POLICY_VERSION,
+            judge_prompt_version=JUDGE_PROMPT_VERSION,
+            judge_prompt_hash=JUDGE_PROMPT_HASH,
+            adversarial_prompt_version=ADVERSARIAL_PROMPT_VERSION,
+            adversarial_prompt_hash=ADVERSARIAL_PROMPT_HASH,
+            provider_id=None,
+            judge_models=(),
+            adversarial_model=None,
+            temperature=0,
+            top_p=1,
+            max_output_tokens=2000,
+            reference_fingerprint=reference_fingerprint(task),
         )
 
     async def get(self, evaluation_id: UUID) -> EvaluationDetail | None:

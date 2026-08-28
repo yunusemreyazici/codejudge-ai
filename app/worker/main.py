@@ -9,6 +9,7 @@ import socket
 from contextlib import suppress
 from uuid import uuid4
 
+from app.ai.factory import create_ai_service
 from app.analysis.factory import create_static_analysis_engine
 from app.core.config import EvaluationMode, Settings
 from app.core.logging import configure_logging
@@ -38,19 +39,22 @@ async def run_worker(settings: Settings) -> None:
     queue = RedisStreamsQueue(settings.redis_url)
     jobs = SqlAlchemyEvaluationJobRepository(database.session_factory)
     registry = TaskRegistry.default(settings.default_execution_timeout)
+    runner = create_python_runner(settings)
     engine = EvaluationEngine(
         registry=registry,
-        runners={"python": create_python_runner(settings)},
+        runners={"python": runner},
         max_code_size=settings.max_code_size,
         analysis_engine=(
             create_static_analysis_engine(settings) if settings.static_analysis_enabled else None
         ),
     )
     evaluations = SqlAlchemyEvaluationRepository(database.session_factory)
+    ai_service = create_ai_service(settings, runner)
     evaluation_service = EvaluationService(
         engine=engine,
         execution_metadata=ExecutionMetadataCollector(settings),
         repository=evaluations,
+        ai_service=ai_service,
     )
     publisher = OutboxPublisher(
         jobs,
@@ -116,6 +120,7 @@ async def run_worker(settings: Settings) -> None:
             for slot in range(settings.worker_concurrency):
                 group.create_task(consumer_loop(slot))
     finally:
+        await ai_service.close()
         await queue.close()
         await database.dispose()
 

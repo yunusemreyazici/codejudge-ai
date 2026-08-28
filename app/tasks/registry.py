@@ -26,6 +26,7 @@ class TaskNotFoundError(TaskRegistryError):
 class RegisteredTask:
     specification: Task
     tests_path: Path
+    reference_path: Path | None = None
 
 
 class TaskRegistry:
@@ -71,7 +72,12 @@ class TaskRegistry:
         tests_path = task_file.parent / "tests"
         if not tests_path.is_dir() or not any(tests_path.glob("test_*.py")):
             raise TaskRegistryError(f"Task has no tests: {specification.id}")
-        return RegisteredTask(specification=specification, tests_path=tests_path)
+        reference_path = task_file.parent / "reference" / "solution.py"
+        return RegisteredTask(
+            specification=specification,
+            tests_path=tests_path,
+            reference_path=reference_path if reference_path.is_file() else None,
+        )
 
     def get(self, task_id: str) -> RegisteredTask:
         try:

@@ -28,6 +28,17 @@ DEFAULT_WORKER_LEASE_SECONDS = 60.0
 DEFAULT_WORKER_MAX_ATTEMPTS = 3
 DEFAULT_OUTBOX_POLL_INTERVAL_SECONDS = 1.0
 DEFAULT_RETRY_BASE_DELAY_SECONDS = 5.0
+DEFAULT_LLM_ENABLED = False
+DEFAULT_LLM_PROVIDER_ID = "default-openai-compatible"
+DEFAULT_LLM_TIMEOUT_SECONDS = 30.0
+DEFAULT_LLM_MAX_ATTEMPTS = 2
+DEFAULT_LLM_MAX_OUTPUT_TOKENS = 2000
+DEFAULT_LLM_MAX_INPUT_BYTES = 100_000
+DEFAULT_LLM_MAX_RESPONSE_BYTES = 256 * 1024
+DEFAULT_LLM_MAX_ADVERSARIAL_TESTS = 5
+DEFAULT_LLM_TEMPERATURE = 0.0
+DEFAULT_LLM_TOP_P = 1.0
+DEFAULT_LLM_DISAGREEMENT_THRESHOLD = 20.0
 
 
 class ExecutionBackend(StrEnum):
@@ -60,6 +71,14 @@ def _positive_int(name: str, default: int) -> int:
     value = default if raw_value is None else int(raw_value)
     if value <= 0:
         raise ValueError(f"{name} must be greater than zero")
+    return value
+
+
+def _bounded_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    raw_value = os.getenv(name)
+    value = default if raw_value is None else float(raw_value)
+    if value < minimum or value > maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
     return value
 
 
@@ -103,6 +122,21 @@ class Settings:
     worker_max_attempts: int = DEFAULT_WORKER_MAX_ATTEMPTS
     outbox_poll_interval_seconds: float = DEFAULT_OUTBOX_POLL_INTERVAL_SECONDS
     retry_base_delay_seconds: float = DEFAULT_RETRY_BASE_DELAY_SECONDS
+    llm_enabled: bool = DEFAULT_LLM_ENABLED
+    llm_base_url: str | None = None
+    llm_api_key: str | None = None
+    llm_provider_id: str = DEFAULT_LLM_PROVIDER_ID
+    llm_judge_models: tuple[str, ...] = ()
+    llm_adversarial_model: str | None = None
+    llm_timeout_seconds: float = DEFAULT_LLM_TIMEOUT_SECONDS
+    llm_max_attempts: int = DEFAULT_LLM_MAX_ATTEMPTS
+    llm_max_output_tokens: int = DEFAULT_LLM_MAX_OUTPUT_TOKENS
+    llm_max_input_bytes: int = DEFAULT_LLM_MAX_INPUT_BYTES
+    llm_max_response_bytes: int = DEFAULT_LLM_MAX_RESPONSE_BYTES
+    llm_max_adversarial_tests: int = DEFAULT_LLM_MAX_ADVERSARIAL_TESTS
+    llm_temperature: float = DEFAULT_LLM_TEMPERATURE
+    llm_top_p: float = DEFAULT_LLM_TOP_P
+    llm_disagreement_threshold: float = DEFAULT_LLM_DISAGREEMENT_THRESHOLD
 
     def __post_init__(self) -> None:
         if self.persistence_enabled and not self.database_url:
@@ -126,6 +160,39 @@ class Settings:
             raise ValueError("OUTBOX_POLL_INTERVAL_SECONDS must be greater than zero")
         if self.retry_base_delay_seconds <= 0:
             raise ValueError("RETRY_BASE_DELAY_SECONDS must be greater than zero")
+        if self.llm_enabled:
+            if not self.persistence_enabled:
+                raise ValueError("PERSISTENCE_ENABLED must be true when LLM evaluation is enabled")
+            if not self.llm_base_url:
+                raise ValueError("LLM_BASE_URL is required when LLM evaluation is enabled")
+            if not self.llm_api_key:
+                raise ValueError("LLM_API_KEY is required when LLM evaluation is enabled")
+            if not self.llm_judge_models:
+                raise ValueError("LLM_JUDGE_MODEL or LLM_JUDGE_MODELS is required")
+            if not self.llm_adversarial_model:
+                raise ValueError("LLM_ADVERSARIAL_MODEL is required")
+        if self.llm_base_url and not self.llm_base_url.startswith(("http://", "https://")):
+            raise ValueError("LLM_BASE_URL must use http or https")
+        if not self.llm_provider_id.strip():
+            raise ValueError("LLM_PROVIDER_ID must not be blank")
+        if any(not model.strip() for model in self.llm_judge_models):
+            raise ValueError("LLM judge model names must not be blank")
+        if self.llm_timeout_seconds <= 0:
+            raise ValueError("LLM_TIMEOUT_SECONDS must be greater than zero")
+        if self.llm_max_attempts <= 0:
+            raise ValueError("LLM_MAX_ATTEMPTS must be greater than zero")
+        if self.llm_max_output_tokens <= 0:
+            raise ValueError("LLM_MAX_OUTPUT_TOKENS must be greater than zero")
+        if self.llm_max_input_bytes <= 0 or self.llm_max_response_bytes <= 0:
+            raise ValueError("LLM input and response limits must be greater than zero")
+        if self.llm_max_adversarial_tests <= 0:
+            raise ValueError("LLM_MAX_ADVERSARIAL_TESTS must be greater than zero")
+        if not 0 <= self.llm_temperature <= 2:
+            raise ValueError("LLM_TEMPERATURE must be between 0 and 2")
+        if not 0 < self.llm_top_p <= 1:
+            raise ValueError("LLM_TOP_P must be greater than zero and at most one")
+        if not 0 <= self.llm_disagreement_threshold <= 100:
+            raise ValueError("LLM_DISAGREEMENT_THRESHOLD must be between 0 and 100")
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -137,6 +204,16 @@ class Settings:
         redis_url = os.getenv("REDIS_URL")
         if redis_url is not None:
             redis_url = redis_url.strip() or None
+        llm_base_url = os.getenv("LLM_BASE_URL")
+        if llm_base_url is not None:
+            llm_base_url = llm_base_url.strip().rstrip("/") or None
+        llm_api_key = os.getenv("LLM_API_KEY")
+        if llm_api_key is not None:
+            llm_api_key = llm_api_key.strip() or None
+        judge_models_raw = os.getenv("LLM_JUDGE_MODELS", os.getenv("LLM_JUDGE_MODEL", ""))
+        judge_models = tuple(
+            model.strip() for model in judge_models_raw.split(",") if model.strip()
+        )
         return cls(
             app_name=os.getenv("APP_NAME", DEFAULT_APP_NAME),
             app_env=os.getenv("APP_ENV", DEFAULT_APP_ENV),
@@ -184,5 +261,31 @@ class Settings:
             ),
             retry_base_delay_seconds=_positive_float(
                 "RETRY_BASE_DELAY_SECONDS", DEFAULT_RETRY_BASE_DELAY_SECONDS
+            ),
+            llm_enabled=_boolean("LLM_ENABLED", DEFAULT_LLM_ENABLED),
+            llm_base_url=llm_base_url,
+            llm_api_key=llm_api_key,
+            llm_provider_id=_environment_value("LLM_PROVIDER_ID", DEFAULT_LLM_PROVIDER_ID),
+            llm_judge_models=judge_models,
+            llm_adversarial_model=(os.getenv("LLM_ADVERSARIAL_MODEL", "").strip() or None),
+            llm_timeout_seconds=_positive_float("LLM_TIMEOUT_SECONDS", DEFAULT_LLM_TIMEOUT_SECONDS),
+            llm_max_attempts=_positive_int("LLM_MAX_ATTEMPTS", DEFAULT_LLM_MAX_ATTEMPTS),
+            llm_max_output_tokens=_positive_int(
+                "LLM_MAX_OUTPUT_TOKENS", DEFAULT_LLM_MAX_OUTPUT_TOKENS
+            ),
+            llm_max_input_bytes=_positive_int("LLM_MAX_INPUT_BYTES", DEFAULT_LLM_MAX_INPUT_BYTES),
+            llm_max_response_bytes=_positive_int(
+                "LLM_MAX_RESPONSE_BYTES", DEFAULT_LLM_MAX_RESPONSE_BYTES
+            ),
+            llm_max_adversarial_tests=_positive_int(
+                "LLM_MAX_ADVERSARIAL_TESTS", DEFAULT_LLM_MAX_ADVERSARIAL_TESTS
+            ),
+            llm_temperature=_bounded_float("LLM_TEMPERATURE", DEFAULT_LLM_TEMPERATURE, 0, 2),
+            llm_top_p=_bounded_float("LLM_TOP_P", DEFAULT_LLM_TOP_P, 0.000001, 1),
+            llm_disagreement_threshold=_bounded_float(
+                "LLM_DISAGREEMENT_THRESHOLD",
+                DEFAULT_LLM_DISAGREEMENT_THRESHOLD,
+                0,
+                100,
             ),
         )

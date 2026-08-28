@@ -2,9 +2,9 @@
 
 ## Scope and threat model
 
-Phase 5 assumes submitted Python is actively malicious. A candidate may loop forever, allocate
-memory, emit unlimited output, spawn processes, inspect its environment, write files, access task
-tests, attempt network connections, or probe host resources.
+Phase 6 assumes submitted Python and all LLM output are actively malicious. A candidate may loop
+forever, allocate memory, emit unlimited output, spawn processes, inspect its environment, write
+files, access task tests, attempt network connections, or probe host resources.
 
 The Docker backend materially reduces exposure from these actions by running each evaluation in a
 new, restricted container. Docker is not a perfect security boundary. The Docker daemon, container
@@ -116,6 +116,32 @@ not tenant isolation and can expose whether a key was previously used. Worker he
 Redis contain random runtime identities and expire automatically; no host secrets are stored in
 them.
 
+## AI provider and generated-test boundary
+
+The LLM is not trusted. It receives bounded structured inference requests and no shell, Docker,
+database, Redis, repository, browsing, or other tool access. Candidate source is serialized only
+inside an explicitly untrusted input object and never interpolated into system instructions.
+Provider output is size-bounded and validated against strict local schemas. Raw prompts, candidate
+source, API keys, credential-bearing base URLs, authorization headers, and raw exceptions are not
+logged or persisted. Only a logical provider ID and non-secret provenance are stored.
+
+Generated tests are also untrusted. Deterministic structural checks reject malformed, oversized,
+duplicate, plugin-declaring, or prohibited test structures, but these checks are not the security
+boundary. Every generated test runs in the same non-root, no-network, read-only, resource-limited
+Docker sandbox—first against a trusted reference, and only then against the candidate. Generated
+tests never execute in FastAPI, a worker process, or directly on the host.
+
+The reference solution is private evaluator material. It is packaged for worker use but is never
+returned by task/evaluation APIs, included in an LLM request, written to Redis, or logged. Passing
+the reference is a strong guardrail against invalid generated tests; it is not formal proof that a
+test fully represents the public specification.
+
+Prompt injection remains possible at the model reasoning layer. Phase 6 limits its impact by
+keeping deterministic scoring authoritative, separating AI findings and provenance, validating
+structured output, denying model tool access, preventing AI mutation of deterministic fields, and
+reference-validating generated tests. CodeJudge does not claim complete prompt-injection
+prevention.
+
 ## Remaining risks
 
 - Container and kernel escape vulnerabilities
@@ -131,6 +157,10 @@ them.
   tenant isolation
 - No user-facing cancellation; an accepted job proceeds until it reaches a terminal lifecycle
   state
+- Nondeterministic or provider-version-dependent LLM behavior even when recorded AI fingerprints
+  match
+- Model-level prompt injection, hallucinated reasoning, and biased assessment within the isolated
+  supplemental AI result
 
 Report security issues privately to the repository maintainers rather than opening a public issue
 with exploit details.

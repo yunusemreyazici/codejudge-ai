@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.ai.models import AIIdentity, AIStatus
 from app.db.models import EvaluationJobRecord, EvaluationRecord, OutboxEventRecord
 from app.db.repositories import PersistenceError, evaluation_record_from_snapshot
 from app.evaluator.models import ScoreBreakdown
@@ -137,6 +138,8 @@ class SqlAlchemyEvaluationJobRepository:
             EvaluationRecord.type_safety_score,
             EvaluationRecord.security_score,
             EvaluationRecord.complexity_score,
+            EvaluationRecord.ai_status,
+            EvaluationRecord.ai_score,
         ).outerjoin(
             EvaluationRecord,
             EvaluationRecord.evaluation_id == EvaluationJobRecord.evaluation_id,
@@ -166,6 +169,8 @@ class SqlAlchemyEvaluationJobRepository:
                 EvaluationRecord.type_safety_score,
                 EvaluationRecord.security_score,
                 EvaluationRecord.complexity_score,
+                EvaluationRecord.ai_status,
+                EvaluationRecord.ai_score,
             )
             .outerjoin(
                 EvaluationJobRecord,
@@ -216,6 +221,8 @@ class SqlAlchemyEvaluationJobRepository:
                     attempt_count=record.attempt_count,
                     score=row.final_score,
                     score_breakdown=breakdown,
+                    ai_status=None if row.ai_status is None else AIStatus(row.ai_status),
+                    ai_score=row.ai_score,
                 )
             )
         for row in legacy_rows:
@@ -238,6 +245,8 @@ class SqlAlchemyEvaluationJobRepository:
                         security=row.security_score,
                         complexity=row.complexity_score,
                     ),
+                    ai_status=None if row.ai_status is None else AIStatus(row.ai_status),
+                    ai_score=row.ai_score,
                 )
             )
         summaries.sort(
@@ -561,6 +570,7 @@ def _job_record(job: EvaluationJob) -> EvaluationJobRecord:
         expected_analyzer_versions=job.expected_analyzer_versions,
         expected_scoring_policy_version=job.expected_scoring_policy_version,
         expected_codejudge_version=job.expected_codejudge_version,
+        expected_ai_identity=job.expected_ai_identity.model_dump(mode="json"),
     )
 
 
@@ -596,6 +606,7 @@ def _job_from_record(record: EvaluationJobRecord) -> EvaluationJob:
         expected_analyzer_versions=record.expected_analyzer_versions,
         expected_scoring_policy_version=record.expected_scoring_policy_version,
         expected_codejudge_version=record.expected_codejudge_version,
+        expected_ai_identity=AIIdentity.model_validate(record.expected_ai_identity),
     )
 
 
