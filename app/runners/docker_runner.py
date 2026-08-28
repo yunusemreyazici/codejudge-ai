@@ -13,6 +13,8 @@ import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
@@ -22,9 +24,11 @@ from app.tasks.registry import RegisteredTask
 
 logger = logging.getLogger(__name__)
 
-_CONTROL_TIMEOUT_SECONDS = 5.0
+_CONTROL_TIMEOUT_SECONDS = 10.0
 _CONTROL_OUTPUT_LIMIT_BYTES = 64 * 1024
 _REPORT_LIMIT_BYTES = 64 * 1024
+_CAPABILITY_ATTEMPTS = 3
+_CAPABILITY_RETRY_DELAY_SECONDS = 0.25
 _SANDBOX_UID = 10001
 _SANDBOX_GID = 10001
 
@@ -37,6 +41,14 @@ class DockerClient(Protocol):
         timeout_seconds: float,
         output_limit_bytes: int,
     ) -> CommandResult: ...
+
+
+class DockerCapabilityFailure(StrEnum):
+    CLI_MISSING = "docker_cli_missing"
+    DAEMON_UNAVAILABLE = "docker_daemon_unavailable"
+    PROBE_TIMEOUT = "docker_probe_timeout"
+    IMAGE_MISSING = "sandbox_image_missing"
+    PROBE_FAILED = "docker_probe_failed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,11 +98,17 @@ class DockerPythonRunner:
         *,
         cli: DockerClient | None = None,
         docker_binary: str = "docker",
+        capability_attempts: int = _CAPABILITY_ATTEMPTS,
+        capability_retry_delay_seconds: float = _CAPABILITY_RETRY_DELAY_SECONDS,
     ) -> None:
         self._config = config
         self._cli = cli or DockerCli(docker_binary)
         self._docker_binary = docker_binary
         self._check_binary_path = cli is None
+        self._capability_attempts = capability_attempts
+        self._capability_retry_delay_seconds = capability_retry_delay_seconds
+        if capability_attempts <= 0 or capability_retry_delay_seconds < 0:
+            raise ValueError("Capability retry settings must be bounded and nonnegative")
 
     async def check_capability(self) -> RunnerCapability:
         if self._check_binary_path and shutil.which(self._docker_binary) is None:
@@ -98,24 +116,41 @@ class DockerPythonRunner:
                 backend="docker",
                 available=False,
                 detail="Docker CLI is unavailable.",
+                reason=DockerCapabilityFailure.CLI_MISSING,
             )
 
-        daemon = await self._control_command(["info", "--format", "{{.ServerVersion}}"])
-        if daemon.exit_code != 0 or daemon.timed_out:
-            return RunnerCapability(
-                backend="docker",
-                available=False,
-                detail="Docker daemon is unavailable.",
-            )
-
-        image = await self._control_command(
-            ["image", "inspect", "--format", "{{.Id}}", self._config.image]
+        daemon = await self._capability_probe(
+            ["info", "--format", "{{.ServerVersion}}"],
+            retry_nonzero=True,
         )
-        if image.exit_code != 0 or image.timed_out:
+        daemon_failure = self._probe_failure(daemon, require_output=True)
+        if daemon_failure is not None:
             return RunnerCapability(
                 backend="docker",
                 available=False,
-                detail=f"Sandbox image '{self._config.image}' is unavailable.",
+                detail=self._capability_detail(daemon_failure),
+                reason=daemon_failure,
+            )
+
+        image = await self._capability_probe(
+            ["image", "inspect", "--format", "{{.Id}}", self._config.image],
+            retry_nonzero=False,
+        )
+        image_failure = self._probe_failure(image, require_output=True)
+        if image_failure is not None:
+            reason = image_failure
+            if image.exit_code not in {None, 0} and not image.timed_out:
+                daemon_confirmation = await self._capability_probe(
+                    ["info", "--format", "{{.ServerVersion}}"],
+                    retry_nonzero=True,
+                )
+                confirmation_failure = self._probe_failure(daemon_confirmation, require_output=True)
+                reason = confirmation_failure or DockerCapabilityFailure.IMAGE_MISSING
+            return RunnerCapability(
+                backend="docker",
+                available=False,
+                detail=self._capability_detail(reason),
+                reason=reason,
             )
 
         return RunnerCapability(
@@ -138,6 +173,8 @@ class DockerPythonRunner:
         )
         container_created = False
         create_attempted = False
+        container_id: str | None = None
+        event_since = self._event_timestamp()
 
         with tempfile.TemporaryDirectory(prefix="codejudge-docker-") as temporary_directory:
             root = Path(temporary_directory)
@@ -161,6 +198,8 @@ class DockerPythonRunner:
                         started_at, "Docker could not create the evaluation container."
                     )
                 container_created = True
+                create_output = create_result.stdout.strip().splitlines()
+                container_id = create_output[0] if create_output else None
 
                 start_result = await self._cli.run(
                     ["start", "--attach", container_name],
@@ -192,7 +231,15 @@ class DockerPythonRunner:
                     return self._infrastructure_failure(
                         started_at, "Docker could not inspect the evaluation container."
                     )
-                if state.oom_killed:
+                oom_killed = state.oom_killed
+                if not oom_killed and state.exit_code == 137:
+                    oom_killed = await self._has_oom_event(
+                        container_id or container_name,
+                        container_name,
+                        event_since,
+                        self._event_timestamp(),
+                    )
+                if oom_killed:
                     return RunnerResult(
                         exit_code=state.exit_code,
                         stdout=start_result.stdout,
@@ -359,6 +406,91 @@ class DockerPythonRunner:
             timeout_seconds=_CONTROL_TIMEOUT_SECONDS,
             output_limit_bytes=_CONTROL_OUTPUT_LIMIT_BYTES,
         )
+
+    async def _capability_probe(
+        self,
+        arguments: Sequence[str],
+        *,
+        retry_nonzero: bool,
+    ) -> CommandResult:
+        result = await self._control_command(arguments)
+        for attempt in range(1, self._capability_attempts):
+            failure = self._probe_failure(result, require_output=True)
+            if failure is None or (
+                failure is DockerCapabilityFailure.DAEMON_UNAVAILABLE and not retry_nonzero
+            ):
+                break
+            await asyncio.sleep(self._capability_retry_delay_seconds * attempt)
+            result = await self._control_command(arguments)
+        return result
+
+    @staticmethod
+    def _probe_failure(
+        result: CommandResult, *, require_output: bool
+    ) -> DockerCapabilityFailure | None:
+        if result.timed_out:
+            return DockerCapabilityFailure.PROBE_TIMEOUT
+        if result.exit_code is None:
+            return DockerCapabilityFailure.PROBE_FAILED
+        if result.exit_code != 0:
+            return DockerCapabilityFailure.DAEMON_UNAVAILABLE
+        if require_output and not result.stdout.strip():
+            return DockerCapabilityFailure.PROBE_FAILED
+        return None
+
+    def _capability_detail(self, reason: DockerCapabilityFailure) -> str:
+        if reason is DockerCapabilityFailure.PROBE_TIMEOUT:
+            return "Docker capability probe timed out."
+        if reason is DockerCapabilityFailure.PROBE_FAILED:
+            return "Docker capability probe failed."
+        if reason is DockerCapabilityFailure.IMAGE_MISSING:
+            return f"Sandbox image '{self._config.image}' is unavailable."
+        return "Docker daemon is unavailable."
+
+    async def _has_oom_event(
+        self,
+        container_reference: str,
+        container_name: str,
+        since: str,
+        until: str,
+    ) -> bool:
+        result = await self._control_command(
+            [
+                "events",
+                "--since",
+                since,
+                "--until",
+                until,
+                "--filter",
+                f"container={container_reference}",
+                "--filter",
+                "event=oom",
+                "--format",
+                "{{json .}}",
+            ]
+        )
+        if result.exit_code != 0 or result.timed_out or result.output_truncated:
+            return False
+        for line in result.stdout.splitlines():
+            try:
+                event: object = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            action = event.get("Action", event.get("status"))
+            actor = event.get("Actor")
+            actor_id = actor.get("ID") if isinstance(actor, dict) else event.get("id")
+            attributes = actor.get("Attributes") if isinstance(actor, dict) else None
+            name = attributes.get("name") if isinstance(attributes, dict) else None
+            exact_actor = actor_id == container_reference or name == container_name
+            if action == "oom" and exact_actor:
+                return True
+        return False
+
+    @staticmethod
+    def _event_timestamp() -> str:
+        return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
     @staticmethod
     def _read_report(report_path: Path) -> _TestReport | None:

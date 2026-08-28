@@ -8,7 +8,7 @@ from app.tasks.registry import TaskRegistry
 
 
 def _result(
-    exit_code: int = 0,
+    exit_code: int | None = 0,
     *,
     stdout: str = "",
     timed_out: bool = False,
@@ -33,14 +33,21 @@ class FakeDockerClient:
         capability_available: bool = True,
         write_report: bool = True,
         create_result: CommandResult | None = None,
+        capability_results: Sequence[CommandResult] | None = None,
+        image_result: CommandResult | None = None,
+        oom_event: dict[str, object] | None = None,
     ) -> None:
         self.start_result = start_result or _result()
         self.state = state or {"ExitCode": 0, "OOMKilled": False}
         self.capability_available = capability_available
         self.write_report = write_report
         self.create_result = create_result or _result(stdout="container-id\n")
+        self.capability_results = list(capability_results or [])
+        self.image_result = image_result
+        self.oom_event = oom_event
         self.commands: list[list[str]] = []
         self.report_path: Path | None = None
+        self.container_name: str | None = None
 
     async def run(
         self,
@@ -52,10 +59,13 @@ class FakeDockerClient:
         command = list(arguments)
         self.commands.append(command)
         if command[:2] == ["info", "--format"]:
-            return _result() if self.capability_available else _result(1)
+            if self.capability_results:
+                return self.capability_results.pop(0)
+            return _result(stdout="29.0.0\n") if self.capability_available else _result(1)
         if command[:2] == ["image", "inspect"]:
-            return _result()
+            return self.image_result or _result(stdout="sha256:sandbox-image\n")
         if command[0] == "create":
+            self.container_name = command[command.index("--name") + 1]
             results_mount = next(
                 command[index + 1]
                 for index, value in enumerate(command)
@@ -73,6 +83,9 @@ class FakeDockerClient:
             return self.start_result
         if command[0] == "inspect":
             return _result(stdout=json.dumps(self.state))
+        if command[0] == "events":
+            stdout = "" if self.oom_event is None else json.dumps(self.oom_event) + "\n"
+            return _result(stdout=stdout)
         if command[0] in {"kill", "rm"}:
             return _result()
         raise AssertionError(f"Unexpected Docker command: {command}")
@@ -89,6 +102,7 @@ def _runner(client: FakeDockerClient) -> DockerPythonRunner:
             output_limit_bytes=1024,
         ),
         cli=client,
+        capability_retry_delay_seconds=0,
     )
 
 
@@ -147,6 +161,72 @@ async def test_runner_uses_inspect_metadata_for_oom(correct_lru: str) -> None:
     assert client.commands[-1][0:2] == ["rm", "--force"]
 
 
+async def test_runner_uses_exact_container_oom_event_when_inspect_is_false(
+    correct_lru: str,
+) -> None:
+    client = FakeDockerClient(
+        start_result=_result(137),
+        state={"ExitCode": 137, "OOMKilled": False},
+        write_report=False,
+        oom_event={
+            "Action": "oom",
+            "Actor": {
+                "ID": "container-id",
+                "Attributes": {"name": "ignored-because-id-matches"},
+            },
+        },
+    )
+
+    result = await _runner(client).evaluate(TaskRegistry.default().get("lru-cache"), correct_lru)
+
+    assert result.oom_killed is True
+    assert result.exit_code == 137
+    events = next(command for command in client.commands if command[0] == "events")
+    assert "container=container-id" in events
+    assert "event=oom" in events
+    assert "--since" in events
+    assert "--until" in events
+    assert client.commands[-1][0:2] == ["rm", "--force"]
+
+
+async def test_runner_does_not_treat_exit_137_without_oom_evidence_as_oom(
+    correct_lru: str,
+) -> None:
+    client = FakeDockerClient(
+        start_result=_result(137),
+        state={"ExitCode": 137, "OOMKilled": False},
+        write_report=False,
+    )
+
+    result = await _runner(client).evaluate(TaskRegistry.default().get("lru-cache"), correct_lru)
+
+    assert result.exit_code == 137
+    assert result.oom_killed is False
+    assert result.sandbox_error == "Sandbox exited without a valid structured test report."
+    assert any(command[0] == "events" for command in client.commands)
+    assert client.commands[-1][0:2] == ["rm", "--force"]
+
+
+async def test_runner_ignores_unrelated_oom_event(correct_lru: str) -> None:
+    client = FakeDockerClient(
+        start_result=_result(137),
+        state={"ExitCode": 137, "OOMKilled": False},
+        write_report=False,
+        oom_event={
+            "Action": "oom",
+            "Actor": {
+                "ID": "another-container-id",
+                "Attributes": {"name": "another-container"},
+            },
+        },
+    )
+
+    result = await _runner(client).evaluate(TaskRegistry.default().get("lru-cache"), correct_lru)
+
+    assert result.oom_killed is False
+    assert result.sandbox_error == "Sandbox exited without a valid structured test report."
+
+
 async def test_runner_reports_unavailable_daemon_without_local_fallback(
     correct_lru: str,
 ) -> None:
@@ -156,6 +236,7 @@ async def test_runner_reports_unavailable_daemon_without_local_fallback(
 
     assert result.infrastructure_error == "Docker daemon is unavailable."
     assert not any(command[0] == "create" for command in client.commands)
+    assert sum(command[:2] == ["info", "--format"] for command in client.commands) == 3
 
 
 async def test_runner_cleans_up_when_report_is_invalid(correct_lru: str) -> None:
@@ -201,3 +282,66 @@ async def test_capability_reports_missing_cli() -> None:
 
     assert capability.available is False
     assert capability.detail == "Docker CLI is unavailable."
+    assert capability.reason == "docker_cli_missing"
+
+
+async def test_capability_retries_a_transient_daemon_failure() -> None:
+    client = FakeDockerClient(capability_results=[_result(1), _result(stdout="29.0.0\n")])
+
+    capability = await _runner(client).check_capability()
+
+    assert capability.available is True
+    assert sum(command[:2] == ["info", "--format"] for command in client.commands) == 2
+
+
+async def test_capability_reports_timeout_after_bounded_retries() -> None:
+    client = FakeDockerClient(capability_results=[_result(None, timed_out=True) for _ in range(3)])
+
+    capability = await _runner(client).check_capability()
+
+    assert capability.available is False
+    assert capability.reason == "docker_probe_timeout"
+    assert capability.detail == "Docker capability probe timed out."
+    assert sum(command[:2] == ["info", "--format"] for command in client.commands) == 3
+
+
+async def test_capability_reports_failed_probe_with_empty_success_output() -> None:
+    client = FakeDockerClient(capability_results=[_result() for _ in range(3)])
+
+    capability = await _runner(client).check_capability()
+
+    assert capability.available is False
+    assert capability.reason == "docker_probe_failed"
+    assert sum(command[:2] == ["info", "--format"] for command in client.commands) == 3
+
+
+async def test_capability_reports_missing_image_without_retrying_nontransient_failure() -> None:
+    client = FakeDockerClient(image_result=_result(1))
+
+    capability = await _runner(client).check_capability()
+
+    assert capability.available is False
+    assert capability.reason == "sandbox_image_missing"
+    assert capability.detail == "Sandbox image 'codejudge-python-sandbox:phase2' is unavailable."
+    assert sum(command[:2] == ["image", "inspect"] for command in client.commands) == 1
+    assert sum(command[:2] == ["info", "--format"] for command in client.commands) == 2
+
+
+async def test_capability_does_not_misreport_daemon_failure_as_missing_image() -> None:
+    client = FakeDockerClient(
+        capability_results=[
+            _result(stdout="29.0.0\n"),
+            _result(1),
+            _result(1),
+            _result(1),
+        ],
+        image_result=_result(1),
+    )
+
+    capability = await _runner(client).check_capability()
+
+    assert capability.available is False
+    assert capability.reason == "docker_daemon_unavailable"
+    assert capability.detail == "Docker daemon is unavailable."
+    assert sum(command[:2] == ["image", "inspect"] for command in client.commands) == 1
+    assert sum(command[:2] == ["info", "--format"] for command in client.commands) == 4

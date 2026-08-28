@@ -49,6 +49,7 @@ def create_router(
     @router.get(
         "/health/sandbox",
         response_model=RunnerCapability,
+        response_model_exclude_none=True,
         summary="Check execution backend capability",
         description="Check whether the configured Python execution backend is operational.",
     )

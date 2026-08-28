@@ -163,3 +163,4 @@ class RunnerCapability(BaseModel):
     backend: str
     available: bool
     detail: str
+    reason: str | None = None

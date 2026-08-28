@@ -64,9 +64,10 @@ async def _run_one(
     runner = create_python_runner(settings)
     capability = await runner.check_capability()
     if not capability.available:
+        diagnostic = f"reason={capability.reason or 'unknown'} detail={capability.detail}"
         if os.getenv("CODEJUDGE_REQUIRE_DOCKER") == "1":
-            pytest.fail(f"Docker sandbox is required: {capability.detail}")
-        pytest.skip(capability.detail)
+            pytest.fail(f"Docker sandbox is required: {diagnostic}")
+        pytest.skip(diagnostic)
     ai_service = create_ai_service(settings, runner, provider=provider)
     metadata = ExecutionMetadataCollector(settings)
     application = create_app(

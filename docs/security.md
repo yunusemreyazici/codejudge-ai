@@ -51,6 +51,12 @@ The report mount cannot create sibling files; the only general-purpose writable 
 size-bounded `/tmp` tmpfs. Containers are force-removed in a `finally` block after success,
 failure, malformed reports, OOM, timeout, and cancellation.
 
+OOM results require runtime evidence: either the container's inspected `OOMKilled` state or a
+Docker `oom` event queried before cleanup with exact container identity and bounded execution
+timestamps. Exit status 137 alone is not sufficient because non-OOM `SIGKILL` paths share it.
+Docker capability commands have a 10-second bound and at most three short retries for transient
+daemon/probe failures; candidate execution itself is never retried or moved to a local fallback.
+
 ## Secrets and environment
 
 The host application's environment is not forwarded. The runner passes only:

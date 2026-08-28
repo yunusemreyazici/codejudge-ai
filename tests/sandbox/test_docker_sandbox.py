@@ -38,9 +38,10 @@ def _runner(
 async def _require_sandbox(runner: DockerPythonRunner) -> None:
     capability = await runner.check_capability()
     if not capability.available:
+        diagnostic = f"reason={capability.reason or 'unknown'} detail={capability.detail}"
         if os.getenv("CODEJUDGE_REQUIRE_DOCKER") == "1":
-            pytest.fail(f"Docker sandbox is required: {capability.detail}")
-        pytest.skip(capability.detail)
+            pytest.fail(f"Docker sandbox is required: {diagnostic}")
+        pytest.skip(diagnostic)
 
 
 def _probe_task(
@@ -311,3 +312,8 @@ async def test_memory_exhaustion_is_reported_from_container_metadata(tmp_path: P
 
     assert result.oom_killed is True
     assert result.exit_code == 137
+    capability = await runner.check_capability()
+    assert capability.available, (
+        "Docker became unhealthy after the bounded OOM probe: "
+        f"reason={capability.reason or 'unknown'} detail={capability.detail}"
+    )

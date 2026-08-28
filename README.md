@@ -146,6 +146,13 @@ unavailable, evaluation returns `503 Service Unavailable`. Docker remains a shar
 container boundary; highly hostile deployments may require future gVisor, Kata Containers, or
 Firecracker/microVM isolation.
 
+Capability checks use a bounded 10-second command timeout. Transient daemon responses, timeouts,
+and malformed empty probe responses are retried at most three times with short deterministic
+delays; a definitively missing sandbox image is not retried. Failure responses include a safe
+reason code without exposing Docker host configuration. OOM classification requires either
+Docker's inspected `OOMKilled` state or a bounded `oom` event whose actor exactly matches the
+evaluation container; exit status 137 alone is never treated as OOM evidence.
+
 Build the stable Phase 2 image tag with:
 
 ```bash
