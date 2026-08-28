@@ -65,6 +65,27 @@ async def test_valid_response_usage_and_authentication_header() -> None:
     await client.aclose()
 
 
+async def test_optional_generation_seed_is_forwarded_without_claiming_determinism() -> None:
+    seen: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return _response()
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = OpenAICompatibleProvider(
+        base_url="https://provider.invalid/v1",
+        api_key="secret",
+        timeout_seconds=1,
+        max_attempts=1,
+        max_response_bytes=4096,
+        client=client,
+    )
+    await provider.complete_structured(_request().model_copy(update={"seed": 42}))
+    assert seen[0]["seed"] == 42
+    await client.aclose()
+
+
 @pytest.mark.parametrize("status", [429, 500, 503])
 async def test_transient_status_retries_once(status: int) -> None:
     calls = 0

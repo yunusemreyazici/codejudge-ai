@@ -20,14 +20,18 @@ async def test_database_was_created_by_current_migration_head(
         table_name = await connection.scalar(text("SELECT to_regclass('public.evaluations')"))
         jobs_table = await connection.scalar(text("SELECT to_regclass('public.evaluation_jobs')"))
         outbox_table = await connection.scalar(text("SELECT to_regclass('public.outbox_events')"))
+        benchmark_table = await connection.scalar(
+            text("SELECT to_regclass('public.benchmark_runs')")
+        )
 
-    assert revision == "20260827_0003"
+    assert revision == "20260828_0004"
     assert table_name == "evaluations"
     assert jobs_table == "evaluation_jobs"
     assert outbox_table == "outbox_events"
+    assert benchmark_table == "benchmark_runs"
 
 
-async def test_phase4_through_phase6_downgrade_upgrade_preserves_snapshot(
+async def test_phase4_through_phase7_downgrade_upgrade_preserves_snapshot(
     database_harness: DatabaseHarness,
 ) -> None:
     snapshot = snapshot_fixture()
@@ -72,3 +76,28 @@ async def test_phase5_to_phase6_upgrade_preserves_existing_snapshot(
     restored = await database_harness.repository.get(snapshot.evaluation_id)
     assert restored == snapshot
     assert restored is not None and restored.ai_assessment is None
+
+
+async def test_phase6_to_phase7_upgrade_preserves_existing_snapshot(
+    database_harness: DatabaseHarness,
+) -> None:
+    snapshot = snapshot_fixture()
+    await database_harness.repository.create(snapshot)
+    config = Config(str(Path(__file__).parents[2] / "alembic.ini"))
+
+    await asyncio.to_thread(command.downgrade, config, "20260827_0003")
+    async with database_harness.database.engine.connect() as connection:
+        revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
+        benchmark_table = await connection.scalar(
+            text("SELECT to_regclass('public.benchmark_runs')")
+        )
+        stored = await connection.scalar(
+            text("SELECT evaluation_id FROM evaluations WHERE evaluation_id = :evaluation_id"),
+            {"evaluation_id": snapshot.evaluation_id},
+        )
+    assert revision == "20260827_0003"
+    assert benchmark_table is None
+    assert stored == snapshot.evaluation_id
+
+    await asyncio.to_thread(command.upgrade, config, "head")
+    assert await database_harness.repository.get(snapshot.evaluation_id) == snapshot

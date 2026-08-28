@@ -2,7 +2,7 @@
 
 ## Scope and threat model
 
-Phase 6 assumes submitted Python and all LLM output are actively malicious. A candidate may loop
+Phase 7 assumes submitted Python and all LLM output are actively malicious. A candidate may loop
 forever, allocate memory, emit unlimited output, spawn processes, inspect its environment, write
 files, access task tests, attempt network connections, or probe host resources.
 
@@ -147,6 +147,21 @@ keeping deterministic scoring authoritative, separating AI findings and provenan
 structured output, denying model tool access, preventing AI mutation of deterministic fields, and
 reference-validating generated tests. CodeJudge does not claim complete prompt-injection
 prevention.
+
+## Benchmark generation boundary
+
+The coding-generation provider receives only public task identity, title, description, language,
+entrypoint, timeout, and the structured output contract. Dataset files contain task/test
+fingerprints, not test source or reference implementations. API keys, Docker/Redis/database
+metadata, hidden tests, and reference solutions are never included in generation requests or
+benchmark provenance.
+
+Generated source is size-bounded, hashed byte-for-byte without normalization, persisted before
+evaluation, and treated as untrusted candidate input. It always enters the existing Docker sandbox
+and analysis pipeline. Redelivery resumes from a durable artifact instead of calling the provider
+again, while query and leaderboard endpoints neither execute source nor contact providers.
+Generated comments and strings remain untrusted input to the separately configured Phase 6 judge,
+preserving the existing prompt-injection separation.
 
 ## Remaining risks
 

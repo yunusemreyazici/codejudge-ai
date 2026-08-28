@@ -148,12 +148,16 @@ class EvaluationService:
         )
 
     async def get(self, evaluation_id: UUID) -> EvaluationDetail | None:
+        snapshot = await self.get_snapshot(evaluation_id)
+        return None if snapshot is None else EvaluationDetail.from_snapshot(snapshot)
+
+    async def get_snapshot(self, evaluation_id: UUID) -> EvaluationSnapshot | None:
+        """Return an immutable snapshot for durable orchestration recovery."""
         repository = self._required_repository()
         try:
-            snapshot = await repository.get(evaluation_id)
+            return await repository.get(evaluation_id)
         except PersistenceError as error:
             raise EvaluationInfrastructureError("Evaluation persistence is unavailable.") from error
-        return None if snapshot is None else EvaluationDetail.from_snapshot(snapshot)
 
     async def list(
         self,

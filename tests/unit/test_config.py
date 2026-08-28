@@ -9,6 +9,7 @@ def test_settings_default_to_docker_backend() -> None:
     assert Settings().persistence_enabled is False
     assert Settings().evaluation_mode is EvaluationMode.SYNC
     assert Settings().llm_enabled is False
+    assert Settings().benchmark_enabled is False
 
 
 def test_settings_load_typed_sandbox_values(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -158,4 +159,40 @@ def test_llm_enabled_requires_persistence() -> None:
             llm_api_key="secret",
             llm_judge_models=("judge-a",),
             llm_adversarial_model="generator-a",
+        )
+
+
+def test_benchmark_settings_use_separate_provider_and_bounded_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BENCHMARK_ENABLED", "true")
+    monkeypatch.setenv("PERSISTENCE_ENABLED", "true")
+    monkeypatch.setenv(
+        "DATABASE_URL", "postgresql+asyncpg://codejudge:secret@localhost/codejudge_test"
+    )
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/3")
+    monkeypatch.setenv("BENCHMARK_BASE_URL", "https://coding.invalid/v1/")
+    monkeypatch.setenv("BENCHMARK_API_KEY", "generation-secret")
+    monkeypatch.setenv("BENCHMARK_PROVIDER_ID", "coding-gateway")
+    monkeypatch.setenv("BENCHMARK_GENERATION_CONCURRENCY", "2")
+    monkeypatch.setenv("MAX_BENCHMARK_TOTAL_GENERATIONS", "40")
+
+    settings = Settings.from_env()
+
+    assert settings.benchmark_enabled is True
+    assert settings.benchmark_base_url == "https://coding.invalid/v1"
+    assert settings.benchmark_provider_id == "coding-gateway"
+    assert settings.benchmark_generation_concurrency == 2
+    assert settings.max_benchmark_total_generations == 40
+    assert settings.llm_enabled is False
+
+
+def test_benchmark_enabled_requires_database_redis_and_provider() -> None:
+    with pytest.raises(ValueError, match="PostgreSQL"):
+        Settings(benchmark_enabled=True)
+    with pytest.raises(ValueError, match="REDIS_URL"):
+        Settings(
+            benchmark_enabled=True,
+            persistence_enabled=True,
+            database_url="postgresql+asyncpg://codejudge:secret@localhost/codejudge_test",
         )

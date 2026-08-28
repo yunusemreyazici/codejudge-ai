@@ -1,0 +1,15 @@
+{
+  "dataset_id": "codejudge-core",
+  "dataset_version": "1",
+  "title": "CodeJudge Core v1",
+  "description": "A compact trusted benchmark containing the rigorously specified LRU cache task.",
+  "task_entries": [
+    {
+      "task_id": "lru-cache",
+      "task_version": "1.0",
+      "task_fingerprint": "36326c717bf1133e4350f8aad230145ffa008c17c06697faca0dfcffd6789ab7",
+      "tests_fingerprint": "54786520687b887b982ed804ff483f599607ced06f09dd04706f66316dcb7c5b",
+      "weight": 1.0
+    }
+  ]
+}

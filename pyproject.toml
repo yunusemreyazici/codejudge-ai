@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codejudge-ai"
-version = "0.6.0"
+version = "0.7.0"
 description = "A deterministic evaluation framework for testing and scoring code submissions."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -28,6 +28,7 @@ dependencies = [
 
 [project.scripts]
 codejudge-worker = "app.worker.main:main"
+codejudge-benchmark-worker = "app.benchmarks.worker_main:main"
 
 [project.optional-dependencies]
 dev = [
@@ -40,6 +41,7 @@ include = ["app*"]
 [tool.setuptools.package-data]
 app = [
     "analysis/*.ini",
+    "benchmarks/datasets/*.json",
     "db/alembic.ini",
     "db/migrations/*.mako",
     "db/migrations/README",
@@ -60,6 +62,7 @@ markers = [
     "worker_e2e: requires PostgreSQL, Redis, and the Docker sandbox image",
     "ai: exercises the Phase 6 AI assessment layer without an external provider",
     "ai_e2e: requires PostgreSQL, Redis, and the Docker sandbox image with a fake LLM",
+    "benchmark_e2e: requires PostgreSQL, Redis, and the Docker sandbox image with fake coding models",
 ]
 
 [tool.ruff]

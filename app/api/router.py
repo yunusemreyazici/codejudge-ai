@@ -2,7 +2,8 @@
 
 from fastapi import APIRouter
 
-from app.api.routes import evaluations, health, tasks
+from app.api.routes import benchmarks, evaluations, health, tasks
+from app.benchmarks.service import BenchmarkService
 from app.core.config import EvaluationMode
 from app.evaluator.engine import EvaluationEngine
 from app.evaluator.service import EvaluationService
@@ -18,11 +19,14 @@ def create_api_router(
     job_service: EvaluationJobService | None,
     evaluation_mode: EvaluationMode,
     queue: EvaluationQueue | None,
+    benchmark_service: BenchmarkService | None = None,
 ) -> APIRouter:
     router = APIRouter()
     router.include_router(health.create_router(engine, service, queue, evaluation_mode))
     versioned = APIRouter(prefix="/api/v1")
     versioned.include_router(tasks.create_router(registry))
     versioned.include_router(evaluations.create_router(service, job_service, evaluation_mode))
+    if benchmark_service is not None:
+        versioned.include_router(benchmarks.create_router(benchmark_service))
     router.include_router(versioned)
     return router

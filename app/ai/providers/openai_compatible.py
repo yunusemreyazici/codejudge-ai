@@ -55,6 +55,8 @@ class OpenAICompatibleProvider:
                 },
             },
         }
+        if request.seed is not None:
+            body["seed"] = request.seed
         last_error = ProviderError("provider_unavailable", transient=True)
         for attempt in range(1, self._max_attempts + 1):
             try:

@@ -39,6 +39,13 @@ DEFAULT_LLM_MAX_ADVERSARIAL_TESTS = 5
 DEFAULT_LLM_TEMPERATURE = 0.0
 DEFAULT_LLM_TOP_P = 1.0
 DEFAULT_LLM_DISAGREEMENT_THRESHOLD = 20.0
+DEFAULT_BENCHMARK_ENABLED = False
+DEFAULT_BENCHMARK_PROVIDER_ID = "default-benchmark-openai-compatible"
+DEFAULT_BENCHMARK_GENERATION_CONCURRENCY = 2
+DEFAULT_MAX_BENCHMARK_MODELS = 5
+DEFAULT_MAX_BENCHMARK_TASKS = 10
+DEFAULT_MAX_BENCHMARK_SAMPLES_PER_TASK = 10
+DEFAULT_MAX_BENCHMARK_TOTAL_GENERATIONS = 100
 
 
 class ExecutionBackend(StrEnum):
@@ -137,6 +144,15 @@ class Settings:
     llm_temperature: float = DEFAULT_LLM_TEMPERATURE
     llm_top_p: float = DEFAULT_LLM_TOP_P
     llm_disagreement_threshold: float = DEFAULT_LLM_DISAGREEMENT_THRESHOLD
+    benchmark_enabled: bool = DEFAULT_BENCHMARK_ENABLED
+    benchmark_base_url: str | None = None
+    benchmark_api_key: str | None = None
+    benchmark_provider_id: str = DEFAULT_BENCHMARK_PROVIDER_ID
+    benchmark_generation_concurrency: int = DEFAULT_BENCHMARK_GENERATION_CONCURRENCY
+    max_benchmark_models: int = DEFAULT_MAX_BENCHMARK_MODELS
+    max_benchmark_tasks: int = DEFAULT_MAX_BENCHMARK_TASKS
+    max_benchmark_samples_per_task: int = DEFAULT_MAX_BENCHMARK_SAMPLES_PER_TASK
+    max_benchmark_total_generations: int = DEFAULT_MAX_BENCHMARK_TOTAL_GENERATIONS
 
     def __post_init__(self) -> None:
         if self.persistence_enabled and not self.database_url:
@@ -193,6 +209,31 @@ class Settings:
             raise ValueError("LLM_TOP_P must be greater than zero and at most one")
         if not 0 <= self.llm_disagreement_threshold <= 100:
             raise ValueError("LLM_DISAGREEMENT_THRESHOLD must be between 0 and 100")
+        if self.benchmark_enabled:
+            if not self.persistence_enabled or not self.database_url:
+                raise ValueError("Benchmarking requires PostgreSQL persistence")
+            if not self.redis_url:
+                raise ValueError("REDIS_URL is required when benchmarking is enabled")
+            if not self.benchmark_base_url or not self.benchmark_api_key:
+                raise ValueError(
+                    "BENCHMARK_BASE_URL and BENCHMARK_API_KEY are required when "
+                    "benchmarking is enabled"
+                )
+        if self.benchmark_base_url and not self.benchmark_base_url.startswith(
+            ("http://", "https://")
+        ):
+            raise ValueError("BENCHMARK_BASE_URL must use http or https")
+        if not self.benchmark_provider_id.strip():
+            raise ValueError("BENCHMARK_PROVIDER_ID must not be blank")
+        benchmark_limits = (
+            self.benchmark_generation_concurrency,
+            self.max_benchmark_models,
+            self.max_benchmark_tasks,
+            self.max_benchmark_samples_per_task,
+            self.max_benchmark_total_generations,
+        )
+        if any(value <= 0 for value in benchmark_limits):
+            raise ValueError("Benchmark concurrency and limits must be greater than zero")
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -210,6 +251,12 @@ class Settings:
         llm_api_key = os.getenv("LLM_API_KEY")
         if llm_api_key is not None:
             llm_api_key = llm_api_key.strip() or None
+        benchmark_base_url = os.getenv("BENCHMARK_BASE_URL")
+        if benchmark_base_url is not None:
+            benchmark_base_url = benchmark_base_url.strip().rstrip("/") or None
+        benchmark_api_key = os.getenv("BENCHMARK_API_KEY")
+        if benchmark_api_key is not None:
+            benchmark_api_key = benchmark_api_key.strip() or None
         judge_models_raw = os.getenv("LLM_JUDGE_MODELS", os.getenv("LLM_JUDGE_MODEL", ""))
         judge_models = tuple(
             model.strip() for model in judge_models_raw.split(",") if model.strip()
@@ -287,5 +334,27 @@ class Settings:
                 DEFAULT_LLM_DISAGREEMENT_THRESHOLD,
                 0,
                 100,
+            ),
+            benchmark_enabled=_boolean("BENCHMARK_ENABLED", DEFAULT_BENCHMARK_ENABLED),
+            benchmark_base_url=benchmark_base_url,
+            benchmark_api_key=benchmark_api_key,
+            benchmark_provider_id=_environment_value(
+                "BENCHMARK_PROVIDER_ID", DEFAULT_BENCHMARK_PROVIDER_ID
+            ),
+            benchmark_generation_concurrency=_positive_int(
+                "BENCHMARK_GENERATION_CONCURRENCY",
+                DEFAULT_BENCHMARK_GENERATION_CONCURRENCY,
+            ),
+            max_benchmark_models=_positive_int(
+                "MAX_BENCHMARK_MODELS", DEFAULT_MAX_BENCHMARK_MODELS
+            ),
+            max_benchmark_tasks=_positive_int("MAX_BENCHMARK_TASKS", DEFAULT_MAX_BENCHMARK_TASKS),
+            max_benchmark_samples_per_task=_positive_int(
+                "MAX_BENCHMARK_SAMPLES_PER_TASK",
+                DEFAULT_MAX_BENCHMARK_SAMPLES_PER_TASK,
+            ),
+            max_benchmark_total_generations=_positive_int(
+                "MAX_BENCHMARK_TOTAL_GENERATIONS",
+                DEFAULT_MAX_BENCHMARK_TOTAL_GENERATIONS,
             ),
         )

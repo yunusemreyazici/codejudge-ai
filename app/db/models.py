@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -14,8 +15,10 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
@@ -246,6 +249,182 @@ class OutboxEventRecord(Base):
         nullable=False,
     )
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_error_code: Mapped[str | None] = mapped_column(String(128))
+
+
+class BenchmarkRunRecord(Base):
+    __tablename__ = "benchmark_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'completed', 'partial', 'failed')",
+            name="ck_benchmark_runs_status",
+        ),
+        CheckConstraint("samples_per_task > 0", name="ck_benchmark_runs_samples_positive"),
+        CheckConstraint("planned_sample_count > 0", name="ck_benchmark_runs_planned_positive"),
+        UniqueConstraint("idempotency_key", name="uq_benchmark_runs_idempotency_key"),
+        Index("ix_benchmark_runs_created_at", "created_at"),
+        Index("ix_benchmark_runs_status", "status"),
+    )
+
+    benchmark_run_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    dataset_id: Mapped[str] = mapped_column(Text, nullable=False)
+    dataset_version: Mapped[str] = mapped_column(Text, nullable=False)
+    dataset_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    benchmark_policy_version: Mapped[str] = mapped_column(Text, nullable=False)
+    coding_prompt_version: Mapped[str] = mapped_column(Text, nullable=False)
+    coding_prompt_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    evaluator_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    benchmark_run_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    samples_per_task: Mapped[int] = mapped_column(Integer, nullable=False)
+    planned_sample_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(255))
+
+
+class BenchmarkModelConfigRecord(Base):
+    __tablename__ = "benchmark_model_configs"
+    __table_args__ = (
+        UniqueConstraint("benchmark_run_id", "ordinal", name="uq_benchmark_model_ordinal"),
+        CheckConstraint("ordinal >= 0", name="ck_benchmark_model_ordinal"),
+        CheckConstraint("max_output_tokens > 0", name="ck_benchmark_model_max_tokens"),
+        Index("ix_benchmark_model_configs_run", "benchmark_run_id"),
+    )
+
+    model_config_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), primary_key=True)
+    benchmark_run_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("benchmark_runs.benchmark_run_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    provider_id: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    display_name: Mapped[str] = mapped_column(Text, nullable=False)
+    temperature: Mapped[float] = mapped_column(Float, nullable=False)
+    top_p: Mapped[float] = mapped_column(Float, nullable=False)
+    max_output_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    seed: Mapped[int | None] = mapped_column(Integer)
+    coding_prompt_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    model_configuration_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    pricing_version: Mapped[str | None] = mapped_column(Text)
+    input_cost_per_million_tokens: Mapped[Decimal | None] = mapped_column(Numeric(24, 12))
+    output_cost_per_million_tokens: Mapped[Decimal | None] = mapped_column(Numeric(24, 12))
+    currency: Mapped[str | None] = mapped_column(String(3))
+
+
+class BenchmarkSampleRecord(Base):
+    __tablename__ = "benchmark_samples"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'generating', 'generated', 'evaluating', 'completed', "
+            "'generation_failed', 'evaluation_failed', 'skipped')",
+            name="ck_benchmark_samples_status",
+        ),
+        CheckConstraint("sample_index > 0", name="ck_benchmark_samples_index"),
+        CheckConstraint("task_weight > 0", name="ck_benchmark_samples_weight"),
+        CheckConstraint(
+            "attempt_count >= 0 AND max_attempts > 0 AND attempt_count <= max_attempts",
+            name="ck_benchmark_samples_attempts",
+        ),
+        UniqueConstraint(
+            "model_config_id", "task_id", "sample_index", name="uq_benchmark_sample_plan"
+        ),
+        UniqueConstraint("evaluation_id", name="uq_benchmark_samples_evaluation"),
+        Index("ix_benchmark_samples_run_status", "benchmark_run_id", "status"),
+        Index("ix_benchmark_samples_lease", "lease_expires_at"),
+        Index("ix_benchmark_samples_task", "task_id"),
+    )
+
+    benchmark_sample_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True
+    )
+    benchmark_run_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("benchmark_runs.benchmark_run_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    model_config_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("benchmark_model_configs.model_config_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    evaluation_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
+    task_id: Mapped[str] = mapped_column(Text, nullable=False)
+    task_version: Mapped[str] = mapped_column(Text, nullable=False)
+    task_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    tests_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    task_weight: Mapped[float] = mapped_column(Float, nullable=False)
+    sample_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    worker_id: Mapped[str | None] = mapped_column(Text)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_code: Mapped[str | None] = mapped_column(String(128))
+    evaluation_duration_seconds: Mapped[float | None] = mapped_column(Float)
+    total_duration_seconds: Mapped[float | None] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class BenchmarkGenerationArtifactRecord(Base):
+    __tablename__ = "benchmark_generation_artifacts"
+    __table_args__ = (
+        CheckConstraint("source_size > 0", name="ck_benchmark_artifacts_source_size"),
+        CheckConstraint("generation_latency_ms >= 0", name="ck_benchmark_artifacts_latency"),
+    )
+
+    benchmark_sample_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("benchmark_samples.benchmark_sample_id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    generation_attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    provider_response_id: Mapped[str | None] = mapped_column(Text)
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
+    generation_latency_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    pricing_version: Mapped[str | None] = mapped_column(Text)
+    generation_cost: Mapped[Decimal | None] = mapped_column(Numeric(24, 12))
+    currency: Mapped[str | None] = mapped_column(String(3))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class BenchmarkOutboxEventRecord(Base):
+    __tablename__ = "benchmark_outbox_events"
+    __table_args__ = (
+        CheckConstraint(
+            "event_type = 'benchmark.sample.requested'",
+            name="ck_benchmark_outbox_event_type",
+        ),
+        CheckConstraint("attempt_count >= 0", name="ck_benchmark_outbox_attempts"),
+        Index(
+            "ix_benchmark_outbox_ready",
+            "published_at",
+            "next_attempt_at",
+            "created_at",
+        ),
+    )
+
+    event_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), primary_key=True)
+    aggregate_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("benchmark_samples.benchmark_sample_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False)

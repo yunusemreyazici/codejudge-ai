@@ -84,6 +84,7 @@ class StructuredLLMRequest(BaseModel):
     max_output_tokens: int = Field(gt=0)
     temperature: float = Field(ge=0, le=2)
     top_p: float = Field(gt=0, le=1)
+    seed: int | None = None
 
 
 class JudgeResult(BaseModel):

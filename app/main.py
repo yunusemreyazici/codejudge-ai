@@ -13,6 +13,9 @@ from app.ai.factory import create_ai_service
 from app.ai.service import AIService
 from app.analysis.factory import create_static_analysis_engine
 from app.api.router import create_api_router
+from app.benchmarks.datasets import BenchmarkDatasetRegistry
+from app.benchmarks.repositories import SqlAlchemyBenchmarkRepository
+from app.benchmarks.service import BenchmarkService
 from app.core.config import EvaluationMode, Settings
 from app.core.logging import configure_logging
 from app.core.version import codejudge_version
@@ -40,6 +43,7 @@ def create_app(
     evaluation_queue: EvaluationQueue | None = None,
     execution_metadata: ExecutionMetadataProvider | None = None,
     ai_service: AIService | None = None,
+    benchmark_service: BenchmarkService | None = None,
 ) -> FastAPI:
     resolved_settings = settings or Settings.from_env()
     configure_logging(resolved_settings.log_level)
@@ -62,6 +66,7 @@ def create_app(
     resolved_job_repository = job_repository
     needs_database = resolved_settings.persistence_enabled and (
         resolved_repository is None
+        or (resolved_settings.benchmark_enabled and benchmark_service is None)
         or (
             resolved_settings.evaluation_mode is EvaluationMode.ASYNC
             and resolved_job_repository is None
@@ -87,6 +92,22 @@ def create_app(
         repository=resolved_repository,
         ai_service=resolved_ai_service,
     )
+    resolved_benchmark_service = benchmark_service
+    if resolved_benchmark_service is None and resolved_settings.benchmark_enabled:
+        if database is None:
+            raise ValueError("Benchmarking requires a PostgreSQL database")
+        benchmark_repository = SqlAlchemyBenchmarkRepository(database.session_factory)
+        resolved_benchmark_service = BenchmarkService(
+            benchmark_repository,
+            BenchmarkDatasetRegistry.default(resolved_registry),
+            resolved_registry,
+            service,
+            max_models=resolved_settings.max_benchmark_models,
+            max_tasks=resolved_settings.max_benchmark_tasks,
+            max_samples_per_task=resolved_settings.max_benchmark_samples_per_task,
+            max_total_generations=resolved_settings.max_benchmark_total_generations,
+            max_attempts=resolved_settings.worker_max_attempts,
+        )
     resolved_queue = evaluation_queue
     owns_queue = False
     if resolved_settings.evaluation_mode is EvaluationMode.ASYNC and resolved_queue is None:
@@ -120,10 +141,10 @@ def create_app(
     application = FastAPI(
         title=resolved_settings.app_name,
         version=codejudge_version(),
-        summary="Deterministic code evaluation with supplemental AI assessment",
+        summary="Deterministic code evaluation and reproducible coding benchmarks",
         description=(
-            "CodeJudge AI Phase 6: authoritative deterministic scoring with a separate, bounded, "
-            "versioned, and provenance-aware AI assessment."
+            "CodeJudge AI Phase 7: authoritative deterministic scoring, separate AI assessment, "
+            "and versioned multi-model benchmark comparisons."
         ),
         lifespan=lifespan,
     )
@@ -135,11 +156,13 @@ def create_app(
             job_service,
             resolved_settings.evaluation_mode,
             resolved_queue,
+            resolved_benchmark_service,
         )
     )
     application.state.database = database
     application.state.evaluation_queue = resolved_queue
     application.state.ai_service = resolved_ai_service
+    application.state.benchmark_service = resolved_benchmark_service
 
     @application.exception_handler(Exception)
     async def unexpected_error_handler(request: Request, error: Exception) -> JSONResponse:

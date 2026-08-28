@@ -2,9 +2,9 @@
 
 > A production-oriented evaluation framework for testing and scoring AI-generated code.
 
-CodeJudge AI is an open-source backend for reproducible code evaluation. Phase 6 adds a bounded,
-versioned LLM judge and reference-validated adversarial tests while retaining authoritative
-deterministic scoring, durable distributed workers, and immutable PostgreSQL snapshots.
+CodeJudge AI is an open-source backend for reproducible code evaluation. Phase 7 adds durable,
+versioned multi-model coding benchmarks and transparent deterministic-score leaderboards while
+retaining separate AI assessment, distributed workers, and immutable PostgreSQL snapshots.
 
 > [!CAUTION]
 > Docker materially strengthens isolation, but it is **not a perfect security boundary**. The
@@ -66,9 +66,11 @@ Implemented:
 - Optional median judge panels with visible disagreement and `disputed` status
 - Structurally validated AI-generated tests checked against a private trusted reference in Docker
 - AI identity capture on queued jobs and safe AI-only skipping after deployment changes
+- Immutable benchmark datasets, generation prompts, model configurations, and run fingerprints
+- Durable benchmark sample/artifact lifecycle with a separate PostgreSQL outbox and Redis Stream
+- Repeated model/task samples, deterministic leaderboards, coverage, latency, tokens, and costs
+- Per-task statistics, separate AI metrics, stable ranking, and compatible cross-run comparison
 - Alembic migrations plus unit, PostgreSQL, Redis, worker, and real Docker tests in CI
-
-Planned features are listed in the roadmap and are not part of the current implementation.
 
 ## Architecture
 
@@ -96,6 +98,19 @@ and runners, analyzers, scoring, and snapshot construction know nothing about Re
 the lifecycle authority; Redis is only recoverable delivery infrastructure. Routes only translate
 HTTP data and never issue SQLAlchemy queries.
 
+Benchmark runs add a parallel orchestration path:
+
+```text
+Dataset x Model Configurations x Samples -> PostgreSQL Plan + Outbox -> Benchmark Redis Stream
+                                                                    -> Coding Provider
+                                                                    -> Generated Artifact
+                                                                    -> Existing CodeJudge Pipeline
+                                                                    -> Snapshot + Leaderboard
+```
+
+The coding provider sees only the public task specification. Generated source is never executed
+outside the existing runner, and benchmark aggregation never reruns providers or evaluations.
+
 ## Quick Start
 
 Python 3.13 or newer, Docker, PostgreSQL 17, and Redis 7 are required for asynchronous operation.
@@ -113,6 +128,8 @@ export REDIS_URL=redis://127.0.0.1:6379/0
 uv run alembic upgrade head
 docker build -t codejudge-python-sandbox:phase2 sandbox/
 uv run codejudge-worker
+# In another worker process when BENCHMARK_ENABLED=true:
+uv run codejudge-benchmark-worker
 # In another terminal with the same environment:
 uv run uvicorn app.main:app --reload
 ```
@@ -210,6 +227,15 @@ and temporary directory are **not** a sandbox. Never use this backend for untrus
 | `LLM_MAX_INPUT_BYTES` | `100000` | Skip AI instead of silently truncating input |
 | `LLM_MAX_RESPONSE_BYTES` | `262144` | HTTP response cap before parsing |
 | `LLM_MAX_ADVERSARIAL_TESTS` | `5` | Generated-test count ceiling |
+| `BENCHMARK_ENABLED` | `false` | Enable benchmark API planning and worker configuration |
+| `BENCHMARK_BASE_URL` | unset | OpenAI-compatible coding provider base URL; never persisted |
+| `BENCHMARK_API_KEY` | unset | Coding provider credential; never persisted or logged |
+| `BENCHMARK_PROVIDER_ID` | `default-benchmark-openai-compatible` | Generation provider identity |
+| `BENCHMARK_GENERATION_CONCURRENCY` | `2` | Conservative generation worker concurrency |
+| `MAX_BENCHMARK_MODELS` | `5` | Model configurations allowed per run |
+| `MAX_BENCHMARK_TASKS` | `10` | Dataset tasks allowed per run |
+| `MAX_BENCHMARK_SAMPLES_PER_TASK` | `10` | Repeated samples allowed per model/task |
+| `MAX_BENCHMARK_TOTAL_GENERATIONS` | `100` | Planned generation ceiling per run |
 
 The enforced Docker timeout is the smaller of the task timeout and
 `SANDBOX_TIMEOUT_SECONDS`.
@@ -227,6 +253,12 @@ The API includes:
 - `POST /api/v1/evaluations` — `202 queued` in async mode; synchronous compatibility otherwise
 - `GET /api/v1/evaluations/{evaluation_id}` — queued/running/retry/failed state or terminal snapshot
 - `GET /api/v1/evaluations` — lifecycle-aware newest-first summaries and historical snapshots
+- `POST /api/v1/benchmarks` — durably plan a versioned comparison run and return `202`
+- `GET /api/v1/benchmarks/{run_id}` — run lifecycle, identity, and configuration summary
+- `GET /api/v1/benchmarks/{run_id}/samples` — paginated/filterable sample summaries
+- `GET /api/v1/benchmarks/{run_id}/samples/{sample_id}` — artifact provenance and evaluation link
+- `GET /api/v1/benchmarks/{run_id}/leaderboard` — deterministic and per-task metrics
+- `POST /api/v1/benchmarks/compare` — compatibility-checked cross-run comparison
 
 Submit the included implementation:
 
@@ -458,6 +490,39 @@ uv run alembic current
 uv run alembic heads
 ```
 
+## Benchmarks
+
+A run expands a repository-versioned dataset across ordered model configurations and repeated
+samples. Each coding model receives the same versioned public-only prompt, and each valid generated
+source enters the ordinary CodeJudge Docker/analyzer/snapshot pipeline. The initial
+`codejudge-core@1` dataset deliberately contains only the rigorously specified `lru-cache` task;
+quality and stable provenance take priority over a large weak task list.
+
+The primary leaderboard rule is higher weighted mean deterministic score, then higher coverage,
+then higher deterministic median, with the model-configuration fingerprint as the stable final
+tie-breaker. Pass rate means `deterministic score == 100`. Mean, median, sample standard deviation,
+minimum, maximum, per-task metrics, and nearest-rank p95 latency are reported without claiming
+statistical significance from small sample counts.
+
+Score and coverage must be read together. A refusal, provider failure, malformed response, or
+evaluation infrastructure failure has a null deterministic score and is never silently converted
+to zero. AI score, judge score, adversarial robustness, disputes, and AI coverage remain separate
+supplemental columns and never affect rank.
+
+Generation pricing is an explicit provider/model/version snapshot. Token usage and calculated cost
+are persisted with the artifact, so later pricing changes cannot rewrite history. Unknown pricing
+is null—not free—and currencies are totaled separately without automatic conversion.
+
+Comparable runs must share the dataset fingerprint, coding-prompt version and hash, deterministic
+evaluator fingerprint, samples per task, and benchmark-policy version. Reproducibility metadata
+also includes model parameters, sandbox/analyzer/scoring identity, pricing version, generation
+attempt count, and exact generated-source hashes. Provider seeds and hashes improve provenance but
+cannot make an externally hosted model perfectly reproducible.
+
+Leaderboard results are conditional on dataset selection, public prompt wording, model parameters,
+sampling randomness, provider backend/version changes, rate limits, test quality, and any configured
+judge-model bias. They are controlled comparisons, not universal intelligence rankings.
+
 ## Security Warning
 
 Candidate tests are not returned through the API, but they are mounted read-only in the sandbox
@@ -476,7 +541,7 @@ handling, Docker daemon boundary, and remaining risks.
 - **Phase 4 — PostgreSQL persistence (implemented):** immutable reproducible evaluation snapshots
 - **Phase 5 — Redis + distributed workers (implemented):** durable at-least-once asynchronous jobs
 - **Phase 6 — LLM judge + adversarial tests (implemented):** versioned review and validated tests
-- **Phase 7 — Multi-model benchmark + leaderboard (planned):** model comparisons
+- **Phase 7 — Multi-model benchmark + leaderboard (implemented):** durable controlled comparisons
 - **Phase 8 — Observability + production hardening (planned):** tracing, metrics, and operations
 
 ## Development
@@ -523,6 +588,9 @@ CODEJUDGE_REQUIRE_DOCKER=1 uv run pytest -v tests/queue/test_ai_worker_e2e.py
 
 # PostgreSQL + Redis + real Docker worker flow
 CODEJUDGE_REQUIRE_DOCKER=1 uv run pytest -v tests/queue/test_worker_e2e.py
+
+# Phase 7 fake-model + PostgreSQL + Redis + real Docker benchmark flow
+CODEJUDGE_REQUIRE_DOCKER=1 uv run pytest -v tests/queue/test_benchmark_worker_e2e.py
 ```
 
 Docker tests verify successful and failing submissions, syntax errors, timeout, cleanup, network
