@@ -52,10 +52,19 @@ async def test_list_tasks_does_not_expose_tests(client: AsyncClient) -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert len(body) == 1
-    assert body[0]["id"] == "lru-cache"
-    assert "tests" not in body[0]
-    assert "tests_path" not in body[0]
+    assert {task["id"] for task in body} == {
+        "async-batch-processor",
+        "circuit-breaker",
+        "dependency-resolver",
+        "lru-cache",
+        "rate-limiter",
+        "retry-backoff",
+        "ttl-cache",
+    }
+    for task in body:
+        assert "tests" not in task
+        assert "tests_path" not in task
+        assert "reference" not in task
 
 
 async def test_get_task(client: AsyncClient) -> None:

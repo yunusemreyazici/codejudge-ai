@@ -1,10 +1,11 @@
 # CodeJudge AI
 
-> A production-oriented evaluation framework for testing and scoring AI-generated code.
+> A distributed evaluation and benchmarking platform for AI-generated code.
 
-CodeJudge AI is an open-source backend for reproducible code evaluation. Phase 7 adds durable,
-versioned multi-model coding benchmarks and transparent deterministic-score leaderboards while
-retaining separate AI assessment, distributed workers, and immutable PostgreSQL snapshots.
+CodeJudge AI executes generated Python in resource-limited Docker containers, combines official
+tests with Ruff, mypy, Bandit, Radon, and optional AI-assisted review, and stores immutable
+PostgreSQL provenance. Durable Redis workers can evaluate submissions or compare coding models
+across versioned benchmark datasets without mixing AI opinions into deterministic scores.
 
 > [!CAUTION]
 > Docker materially strengthens isolation, but it is **not a perfect security boundary**. The
@@ -32,45 +33,37 @@ CodeJudge AI begins with deterministic tests and keeps execution behind a typed 
 so stronger isolation and future analysis can evolve without moving infrastructure details into
 the API or scoring core.
 
-## Current Features
+## What it demonstrates
 
-Implemented:
+### Secure execution
 
-- FastAPI application with OpenAPI documentation at `/docs`
-- Local task registry with public-safe task models
-- Bundled `lru-cache` task with eight deterministic tests
-- Typed `CodeRunner` abstraction with `local` and `docker` Python backends
-- Restricted, non-root Docker sandbox image targeting Python 3.13
-- No-network containers with memory, CPU, PID, timeout, and output limits
-- Read-only root and candidate files, minimal writable storage, dropped capabilities, and
-  `no-new-privileges`
-- Structured test results plus syntax, testing, resource, timeout, and sandbox findings
-- Explicit capability detection and HTTP `503` when the configured backend is unavailable
-- Ruff code-quality findings using the documented `E`, `F`, `B`, `UP`, and `SIM` rule families
-- mypy type-safety findings with a trusted configuration and no candidate plugin/config loading
-- Bandit security heuristics with severity and confidence mapping
-- Radon cyclomatic-complexity maximum and average metrics
-- Deterministic five-dimensional weighted scoring with correctness derived only from tests
-- Per-analyzer timeouts, bounded output capture, minimal environments, and temporary cleanup
-- Async SQLAlchemy 2.x persistence through the PostgreSQL `asyncpg` driver
-- UUID evaluation identities and append-only snapshots protected by a database trigger
-- Exact source hashes, task/test fingerprints, and reproducibility fingerprints
-- Stored analyzer, scoring-policy, application, and sandbox-image versions
-- Historical detail and filtered/paginated summary APIs that never rerun candidate code
-- Durable PostgreSQL job lifecycle and transactional outbox
-- Redis Streams consumer-group delivery with acknowledgements and stale-message reclaim
-- Worker leases, bounded retries, deterministic backoff, and stale-job recovery
-- Idempotent terminal completion and optional HTTP `Idempotency-Key` support
-- Optional OpenAI-compatible structured LLM provider with bounded requests and transient retries
-- Versioned judge/adversarial prompts, strict local schemas, provenance, and separate AI scoring
-- Optional median judge panels with visible disagreement and `disputed` status
-- Structurally validated AI-generated tests checked against a private trusted reference in Docker
-- AI identity capture on queued jobs and safe AI-only skipping after deployment changes
-- Immutable benchmark datasets, generation prompts, model configurations, and run fingerprints
-- Durable benchmark sample/artifact lifecycle with a separate PostgreSQL outbox and Redis Stream
-- Repeated model/task samples, deterministic leaderboards, coverage, latency, tokens, and costs
-- Per-task statistics, separate AI metrics, stable ranking, and compatible cross-run comparison
-- Alembic migrations plus unit, PostgreSQL, Redis, worker, and real Docker tests in CI
+- Non-root, no-network, read-only Docker evaluation with CPU, memory, PID, time, and output limits
+- Dropped capabilities, `no-new-privileges`, scoped writable storage, and mandatory cleanup
+
+### Deterministic evaluation
+
+- Versioned public tasks, official pytest suites, trusted references, and stable fingerprints
+- Ruff, mypy, Bandit, and Radon findings with a fixed five-dimensional scoring policy
+
+### AI-assisted evaluation
+
+- Versioned structured judge prompts and reference-validated adversarial tests
+- Separate AI score, provenance, coverage, and disagreement—never blended into deterministic rank
+
+### Distributed processing
+
+- FastAPI, PostgreSQL, Redis Streams, transactional outboxes, leases, retries, and idempotent workers
+- At-least-once delivery with PostgreSQL—not Redis—as lifecycle authority
+
+### Reproducibility
+
+- Immutable snapshots containing exact source, task/test/analyzer/scoring/sandbox identities
+- Historical reads and aggregates that never rerun source or contact a provider
+
+### Benchmarking
+
+- Repeated multi-model runs over immutable datasets with public-only coding prompts
+- Deterministic leaderboards alongside coverage, per-task results, latency, tokens, and cost snapshots
 
 ## Architecture
 
@@ -101,11 +94,14 @@ HTTP data and never issue SQLAlchemy queries.
 Benchmark runs add a parallel orchestration path:
 
 ```text
-Dataset x Model Configurations x Samples -> PostgreSQL Plan + Outbox -> Benchmark Redis Stream
-                                                                    -> Coding Provider
-                                                                    -> Generated Artifact
-                                                                    -> Existing CodeJudge Pipeline
-                                                                    -> Snapshot + Leaderboard
+Coding Model -> Generated Candidate -> Benchmark Worker -> CodeJudge Evaluation
+                                                        |-> Docker official tests
+                                                        |-> Ruff / mypy / Bandit / Radon
+                                                        `-> optional AI judge + adversarial tests
+                                                                  |
+                                                         Immutable Snapshot
+                                                                  |
+                                                      Aggregation + Leaderboard
 ```
 
 The coding provider sees only the public task specification. Generated source is never executed
@@ -134,7 +130,8 @@ uv run codejudge-benchmark-worker
 uv run uvicorn app.main:app --reload
 ```
 
-`make sandbox-build` provides the same image-build command. Open
+Set `BENCHMARK_ENABLED=true` plus the benchmark provider variables documented below before starting
+the benchmark worker. `make sandbox-build` provides the same image-build command. Open
 [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs) for the interactive API.
 
 ## Execution Backends
@@ -152,8 +149,10 @@ per evaluation—and each request creates a fresh container. Implemented restric
 - fractional CPU allocation
 - PID/process ceiling
 - read-only root filesystem and read-only candidate workspace
-- bounded writable `/tmp` and a scoped result mount
-- all Linux capabilities dropped and `no-new-privileges`
+- bounded writable `/tmp`; the candidate workspace contains only `solution.py`
+- zero candidate capabilities and `no-new-privileges`; only the supervisor retains
+  `SETUID`/`SETGID` long enough to create the non-root candidate process
+- host-side private assertions over a bounded, one-operation-at-a-time JSON-lines protocol
 - application-enforced timeout and bounded combined output capture
 - bounded per-container Docker logs
 - an explicit minimal environment with no host secrets
@@ -495,8 +494,21 @@ uv run alembic heads
 A run expands a repository-versioned dataset across ordered model configurations and repeated
 samples. Each coding model receives the same versioned public-only prompt, and each valid generated
 source enters the ordinary CodeJudge Docker/analyzer/snapshot pipeline. The initial
-`codejudge-core@1` dataset deliberately contains only the rigorously specified `lru-cache` task;
-quality and stable provenance take priority over a large weak task list.
+`codejudge-core@1` remains the immutable original LRU-only dataset. `codejudge-core@2` contains a
+seven-task engineering portfolio with equal weights:
+
+| Task | Primary skill |
+| --- | --- |
+| LRU Cache | data structures and recency state |
+| TTL Cache | expiration, state, and eviction |
+| Sliding-Window Rate Limiter | time-window algorithms and per-key state |
+| Retry Backoff | deterministic reliability arithmetic |
+| Dependency Resolver | graphs, cycles, and stable ordering |
+| Async Batch Processor | asyncio, bounded concurrency, and cleanup |
+| Circuit Breaker | explicit reliability state machines |
+
+See [Benchmark Design](docs/BENCHMARK_DESIGN.md) for contracts, selection rationale, common bugs,
+determinism, privacy, and interpretation limits.
 
 The primary leaderboard rule is higher weighted mean deterministic score, then higher coverage,
 then higher deterministic median, with the model-configuration fingerprint as the stable final
@@ -523,12 +535,32 @@ Leaderboard results are conditional on dataset selection, public prompt wording,
 sampling randomness, provider backend/version changes, rate limits, test quality, and any configured
 judge-model bias. They are controlled comparisons, not universal intelligence rankings.
 
+Create a v2 run:
+
+```bash
+curl --fail-with-body -H 'Content-Type: application/json' \
+  --data '{
+    "dataset_id": "codejudge-core",
+    "dataset_version": "2",
+    "models": [
+      {"provider_id": "configured-provider", "model": "coding-model", "temperature": 0}
+    ],
+    "samples_per_task": 1
+  }' http://127.0.0.1:8000/api/v1/benchmarks
+```
+
+`GET /api/v1/benchmarks/{run_id}/leaderboard` reports deterministic mean/median, coverage,
+per-task scores, separate AI coverage/score, generation latency, token usage, and snapshotted cost.
+The CI fake-model run demonstrates this contract; it is not a real-model performance claim.
+
 ## Security Warning
 
-Candidate tests are not returned through the API, but they are mounted read-only in the sandbox
-and can be inspected by malicious code. Phase 2 does not guarantee hidden-test confidentiality or
-protect against container-runtime/kernel escapes. The API process's Docker access is itself a
-high-value trust boundary, while candidate containers never receive the Docker socket.
+Official tests and trusted references are not mounted in candidate workspaces. A trusted host-side
+harness sends one bounded public-API operation at a time to a stateful candidate process and keeps
+assertions, expected values, future operations, and evaluator paths outside the candidate
+interpreter. Real-Docker canary tests enforce this boundary. Docker still does not protect against
+container-runtime/kernel escapes; daemon access remains a high-value trust boundary, and candidate
+containers never receive the Docker socket.
 
 Read [docs/security.md](docs/security.md) for the threat model, implemented controls, secret
 handling, Docker daemon boundary, and remaining risks.
@@ -542,6 +574,7 @@ handling, Docker daemon boundary, and remaining risks.
 - **Phase 5 — Redis + distributed workers (implemented):** durable at-least-once asynchronous jobs
 - **Phase 6 — LLM judge + adversarial tests (implemented):** versioned review and validated tests
 - **Phase 7 — Multi-model benchmark + leaderboard (implemented):** durable controlled comparisons
+- **Phase 7.1 — Dataset expansion (implemented):** seven rigorous, diverse engineering tasks
 - **Phase 8 — Observability + production hardening (planned):** tracing, metrics, and operations
 
 ## Development
@@ -591,6 +624,9 @@ CODEJUDGE_REQUIRE_DOCKER=1 uv run pytest -v tests/queue/test_worker_e2e.py
 
 # Phase 7 fake-model + PostgreSQL + Redis + real Docker benchmark flow
 CODEJUDGE_REQUIRE_DOCKER=1 uv run pytest -v tests/queue/test_benchmark_worker_e2e.py
+
+# Authoritative full verification with all services configured
+CODEJUDGE_REQUIRE_DOCKER=1 uv run pytest -v
 ```
 
 Docker tests verify successful and failing submissions, syntax errors, timeout, cleanup, network

@@ -1,0 +1,9 @@
+{
+  "id": "circuit-breaker",
+  "title": "Deterministic Circuit Breaker",
+  "description": "Implement CircuitOpenError and class CircuitBreaker(failure_threshold: int, recovery_timeout: float). Both arguments must be positive; invalid values raise ValueError. The read-only state property is 'closed', 'open', or 'half_open'. call(operation, now: float) invokes a zero-argument synchronous operation and returns its result. In closed state, Exception failures increment a consecutive count and are re-raised; reaching the threshold opens the breaker at now. Success resets failures. While open and now < opened_at + recovery_timeout, call raises CircuitOpenError without invoking operation. At or after that boundary, exactly that call is a half-open probe: its operation observes state == 'half_open'; success closes the breaker, while Exception failure reopens it at the probe timestamp. Per-breaker timestamps must be nondecreasing. reset() returns to closed state and clears timing/failures.",
+  "language": "python",
+  "entrypoint": "solution:CircuitBreaker",
+  "timeout_seconds": 5.0,
+  "version": "1.0"
+}

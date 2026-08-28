@@ -1,0 +1,57 @@
+{
+  "dataset_id": "codejudge-core",
+  "dataset_version": "2",
+  "title": "CodeJudge Core v2",
+  "description": "A diverse deterministic software-engineering benchmark covering state, time, reliability, graphs, and asynchronous concurrency.",
+  "task_entries": [
+    {
+      "task_id": "lru-cache",
+      "task_version": "1.0",
+      "task_fingerprint": "36326c717bf1133e4350f8aad230145ffa008c17c06697faca0dfcffd6789ab7",
+      "tests_fingerprint": "54786520687b887b982ed804ff483f599607ced06f09dd04706f66316dcb7c5b",
+      "weight": 1.0
+    },
+    {
+      "task_id": "ttl-cache",
+      "task_version": "1.0",
+      "task_fingerprint": "986a67c2492086473e206521b47a2dce9a82c81ab5509c322a4e7a10479722b3",
+      "tests_fingerprint": "96bc0c57b021c274b0cdc8264daf6855e239172cb07ec919f9adc9621afe832c",
+      "weight": 1.0
+    },
+    {
+      "task_id": "rate-limiter",
+      "task_version": "1.0",
+      "task_fingerprint": "8fa788f2335cb904651617584730b270fdf0622e778cc9793b571668f88b7be4",
+      "tests_fingerprint": "cbfe634e3847d082e634a936b8d44eadddf4c88d2e1504596112c5a7f25bf54c",
+      "weight": 1.0
+    },
+    {
+      "task_id": "retry-backoff",
+      "task_version": "1.0",
+      "task_fingerprint": "8ccf22ace44938c627a4ce842d91d27844b0ff1d66cd8bdd6b91564a3f47d99e",
+      "tests_fingerprint": "f42dfd9fe12343865daff18202a010ab324c17f7f99b40c809b7bc64006c7567",
+      "weight": 1.0
+    },
+    {
+      "task_id": "dependency-resolver",
+      "task_version": "1.0",
+      "task_fingerprint": "cfcc510c677ebb4d90f49594f413803f8634dc01d4cb60c0362cce11e376e83b",
+      "tests_fingerprint": "9446347072c3b10b3a8f468bd6484e6e7332ea9e4b434691271170d9500f458c",
+      "weight": 1.0
+    },
+    {
+      "task_id": "async-batch-processor",
+      "task_version": "1.0",
+      "task_fingerprint": "98f1782f22c1a5341ae3aa30bb04c9befdaa93e974e6c471145836860577b9a1",
+      "tests_fingerprint": "82129e90b0156a00461d1f69a9a7dcc83ca80c0c054a48d0037d47aa167bfedd",
+      "weight": 1.0
+    },
+    {
+      "task_id": "circuit-breaker",
+      "task_version": "1.0",
+      "task_fingerprint": "64dcb0fea94ec7f0dccc74ee6bbc4319e06997c67d38670bab0f46ee41c37ed3",
+      "tests_fingerprint": "21000a786964f16e0167b90bcc37f18f689311c95021ba73dbdcbc2437fbbad7",
+      "weight": 1.0
+    }
+  ]
+}

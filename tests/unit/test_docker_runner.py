@@ -1,9 +1,12 @@
+from __future__ import annotations
+
+import asyncio
 import json
 from collections.abc import Sequence
-from pathlib import Path
 
 from app.runners.docker_cli import CommandResult
 from app.runners.docker_runner import DockerPythonRunner, DockerSandboxConfig
+from app.runners.trusted_harness import HarnessProtocolError, HarnessReport
 from app.tasks.registry import TaskRegistry
 
 
@@ -31,7 +34,6 @@ class FakeDockerClient:
         start_result: CommandResult | None = None,
         state: dict[str, object] | None = None,
         capability_available: bool = True,
-        write_report: bool = True,
         create_result: CommandResult | None = None,
         capability_results: Sequence[CommandResult] | None = None,
         image_result: CommandResult | None = None,
@@ -40,14 +42,13 @@ class FakeDockerClient:
         self.start_result = start_result or _result()
         self.state = state or {"ExitCode": 0, "OOMKilled": False}
         self.capability_available = capability_available
-        self.write_report = write_report
         self.create_result = create_result or _result(stdout="container-id\n")
         self.capability_results = list(capability_results or [])
         self.image_result = image_result
         self.oom_event = oom_event
         self.commands: list[list[str]] = []
-        self.report_path: Path | None = None
         self.container_name: str | None = None
+        self.attached = FakeAttachedProcess(self.start_result)
 
     async def run(
         self,
@@ -66,21 +67,7 @@ class FakeDockerClient:
             return self.image_result or _result(stdout="sha256:sandbox-image\n")
         if command[0] == "create":
             self.container_name = command[command.index("--name") + 1]
-            results_mount = next(
-                command[index + 1]
-                for index, value in enumerate(command)
-                if value == "--mount" and "target=/results/report.json" in command[index + 1]
-            )
-            source = results_mount.split("source=", 1)[1].split(",target=", 1)[0]
-            self.report_path = Path(source)
             return self.create_result
-        if command[:2] == ["start", "--attach"]:
-            if self.write_report and not self.start_result.timed_out:
-                if self.report_path is None:
-                    raise AssertionError("create command was not observed")
-                report = {"passed": 8, "failed": 0, "total": 8}
-                self.report_path.write_text(json.dumps(report))
-            return self.start_result
         if command[0] == "inspect":
             return _result(stdout=json.dumps(self.state))
         if command[0] == "events":
@@ -90,19 +77,83 @@ class FakeDockerClient:
             return _result()
         raise AssertionError(f"Unexpected Docker command: {command}")
 
+    async def open(
+        self,
+        arguments: Sequence[str],
+        *,
+        output_limit_bytes: int,
+    ) -> FakeAttachedProcess:
+        del output_limit_bytes
+        self.commands.append(list(arguments))
+        return self.attached
 
-def _runner(client: FakeDockerClient) -> DockerPythonRunner:
+
+class FakeAttachedProcess:
+    def __init__(self, result: CommandResult) -> None:
+        self._result = result
+        self._responses: list[bytes] = []
+        self.terminated = False
+
+    async def write_line(self, payload: bytes) -> None:
+        request = json.loads(payload)
+        self._responses.append(json.dumps({"id": request["id"], "ok": True}).encode() + b"\n")
+
+    async def read_line(self, *, limit_bytes: int) -> bytes:
+        del limit_bytes
+        return self._responses.pop(0)
+
+    async def wait(self) -> int | None:
+        return self._result.exit_code
+
+    async def terminate(self) -> None:
+        self.terminated = True
+
+    @property
+    def stderr(self) -> str:
+        return self._result.stderr
+
+    @property
+    def output_truncated(self) -> bool:
+        return self._result.output_truncated
+
+
+class StubHarness:
+    async def evaluate(self, task_id: str, transport: object) -> HarnessReport:
+        del task_id, transport
+        return HarnessReport(passed=8, failed=0, total=8)
+
+
+class BlockingHarness:
+    async def evaluate(self, task_id: str, transport: object) -> HarnessReport:
+        del task_id, transport
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+class InvalidHarness:
+    async def evaluate(self, task_id: str, transport: object) -> HarnessReport:
+        del task_id, transport
+        raise HarnessProtocolError("Candidate supervisor returned an invalid response")
+
+
+def _runner(
+    client: FakeDockerClient,
+    *,
+    harness: object | None = None,
+    timeout_seconds: float = 2,
+) -> DockerPythonRunner:
     return DockerPythonRunner(
         DockerSandboxConfig(
             image="codejudge-python-sandbox:phase2",
             memory_mb=256,
             cpus=0.5,
             pids_limit=64,
-            timeout_seconds=2,
+            timeout_seconds=timeout_seconds,
             output_limit_bytes=1024,
         ),
         cli=client,
         capability_retry_delay_seconds=0,
+        harness=harness or StubHarness(),  # type: ignore[arg-type]
     )
 
 
@@ -118,7 +169,9 @@ async def test_runner_builds_restricted_container_and_cleans_up(correct_lru: str
     assert "--read-only" in create
     assert "--privileged" not in create
     assert "/var/run/docker.sock" not in " ".join(create)
-    assert ["--user", "10001:10001"] == create[create.index("--user") :][:2]
+    assert "--user" not in create
+    assert ["--cap-add", "SETUID"] in [create[index : index + 2] for index in range(len(create))]
+    assert ["--cap-add", "SETGID"] in [create[index : index + 2] for index in range(len(create))]
     assert ["--pids-limit", "64"] == create[create.index("--pids-limit") :][:2]
     assert ["--ulimit", "fsize=65536:65536"] == create[create.index("--ulimit") :][:2]
     assert ["--memory", "256m"] == create[create.index("--memory") :][:2]
@@ -135,18 +188,24 @@ async def test_runner_builds_restricted_container_and_cleans_up(correct_lru: str
         "PYTHONDONTWRITEBYTECODE=1",
         "PYTHONUNBUFFERED=1",
         "PYTHONPATH=/workspace",
-        "CODEJUDGE_REPORT_PATH=/results/report.json",
     ]
+    mounts = [create[index + 1] for index, value in enumerate(create) if value == "--mount"]
+    assert len(mounts) == 1
+    assert "target=/workspace,readonly" in mounts[0]
+    assert "task_tests" not in mounts[0]
+    assert "reference" not in mounts[0]
     assert client.commands[-1][0:2] == ["rm", "--force"]
 
 
 async def test_runner_kills_and_removes_timed_out_container(correct_lru: str) -> None:
-    client = FakeDockerClient(start_result=_result(timed_out=True))
+    client = FakeDockerClient()
 
-    result = await _runner(client).evaluate(TaskRegistry.default().get("lru-cache"), correct_lru)
+    result = await _runner(client, harness=BlockingHarness(), timeout_seconds=0.01).evaluate(
+        TaskRegistry.default().get("lru-cache"), correct_lru
+    )
 
     assert result.timed_out is True
-    assert result.enforced_timeout_seconds == 2
+    assert result.enforced_timeout_seconds == 0.01
     assert any(command[0] == "kill" for command in client.commands)
     assert client.commands[-1][0:2] == ["rm", "--force"]
 
@@ -167,7 +226,6 @@ async def test_runner_uses_exact_container_oom_event_when_inspect_is_false(
     client = FakeDockerClient(
         start_result=_result(137),
         state={"ExitCode": 137, "OOMKilled": False},
-        write_report=False,
         oom_event={
             "Action": "oom",
             "Actor": {
@@ -195,7 +253,6 @@ async def test_runner_does_not_treat_exit_137_without_oom_evidence_as_oom(
     client = FakeDockerClient(
         start_result=_result(137),
         state={"ExitCode": 137, "OOMKilled": False},
-        write_report=False,
     )
 
     result = await _runner(client).evaluate(TaskRegistry.default().get("lru-cache"), correct_lru)
@@ -211,7 +268,6 @@ async def test_runner_ignores_unrelated_oom_event(correct_lru: str) -> None:
     client = FakeDockerClient(
         start_result=_result(137),
         state={"ExitCode": 137, "OOMKilled": False},
-        write_report=False,
         oom_event={
             "Action": "oom",
             "Actor": {
@@ -240,11 +296,13 @@ async def test_runner_reports_unavailable_daemon_without_local_fallback(
 
 
 async def test_runner_cleans_up_when_report_is_invalid(correct_lru: str) -> None:
-    client = FakeDockerClient(write_report=False)
+    client = FakeDockerClient()
 
-    result = await _runner(client).evaluate(TaskRegistry.default().get("lru-cache"), correct_lru)
+    result = await _runner(client, harness=InvalidHarness()).evaluate(
+        TaskRegistry.default().get("lru-cache"), correct_lru
+    )
 
-    assert result.sandbox_error == "Sandbox exited without a valid structured test report."
+    assert result.sandbox_error == "Candidate supervisor returned an invalid response"
     assert client.commands[-1][0:2] == ["rm", "--force"]
 
 

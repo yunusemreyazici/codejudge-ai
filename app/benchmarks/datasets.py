@@ -54,6 +54,9 @@ class BenchmarkDatasetRegistry:
             entries = tuple(sorted(definition.task_entries, key=lambda item: item.task_id))
             if not entries:
                 raise DatasetRegistryError(f"Benchmark dataset has no tasks: {path.name}")
+            task_keys = [(entry.task_id, entry.task_version) for entry in entries]
+            if len(set(task_keys)) != len(task_keys):
+                raise DatasetRegistryError(f"Duplicate task in benchmark dataset: {path.name}")
             for entry in entries:
                 self._validate_entry(entry)
             key = (definition.dataset_id, definition.dataset_version)

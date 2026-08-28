@@ -1,0 +1,9 @@
+{
+  "id": "dependency-resolver",
+  "title": "Deterministic Dependency Resolver",
+  "description": "Implement DependencyCycleError (a ValueError subclass) and resolve_dependencies(graph: dict[str, list[str]]) -> list[str]. Each mapping key is a component and its values are direct dependencies. Return every named node exactly once with every dependency before its dependent. Dependencies absent as mapping keys are valid leaf nodes and must be included. When several nodes are available, choose the lexicographically smallest, making the complete result deterministic across disconnected components. Duplicate dependency entries have no additional effect. Raise DependencyCycleError for any cycle, including a self-cycle. Reject non-string node names with TypeError and do not mutate the input graph.",
+  "language": "python",
+  "entrypoint": "solution:resolve_dependencies",
+  "timeout_seconds": 5.0,
+  "version": "1.0"
+}

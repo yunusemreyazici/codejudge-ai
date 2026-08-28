@@ -6,14 +6,23 @@ import pytest
 from app.tasks.registry import TaskNotFoundError, TaskRegistry, TaskRegistryError
 
 
-def test_default_registry_loads_lru_task() -> None:
+def test_default_registry_loads_complete_task_portfolio() -> None:
     registry = TaskRegistry.default()
 
     tasks = registry.list()
 
-    assert [task.id for task in tasks] == ["lru-cache"]
-    assert tasks[0].entrypoint == "solution:LRUCache"
+    assert [task.id for task in tasks] == [
+        "async-batch-processor",
+        "circuit-breaker",
+        "dependency-resolver",
+        "lru-cache",
+        "rate-limiter",
+        "retry-backoff",
+        "ttl-cache",
+    ]
+    assert registry.get("lru-cache").specification.entrypoint == "solution:LRUCache"
     assert registry.get("lru-cache").tests_path.is_dir()
+    assert all(task.reference_path is not None for task in registry)
 
 
 def test_unknown_task_raises_typed_error() -> None:

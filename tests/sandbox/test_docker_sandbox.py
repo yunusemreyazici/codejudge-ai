@@ -120,7 +120,7 @@ async def test_infinite_loop_is_terminated_and_container_is_removed(tmp_path: Pa
         timeout_seconds=2,
     )
 
-    result = await runner.evaluate(task, "while True:\n    pass\n")
+    result = await runner.evaluate_generated_tests(task, "while True:\n    pass\n")
 
     assert result.timed_out is True
     remaining = await DockerCli().run(
@@ -162,7 +162,7 @@ def network_is_blocked():
         connection.close()
 """.lstrip()
 
-    result = await runner.evaluate(task, code)
+    result = await runner.evaluate_generated_tests(task, code)
 
     assert result.passed == 1
 
@@ -187,7 +187,7 @@ def root_is_read_only():
     return False
 """.lstrip()
 
-    result = await runner.evaluate(task, code)
+    result = await runner.evaluate_generated_tests(task, code)
 
     assert result.passed == 1
 
@@ -213,7 +213,7 @@ def restrictions_hold():
     )
 """.lstrip()
 
-    result = await runner.evaluate(task, code)
+    result = await runner.evaluate_generated_tests(task, code)
 
     assert result.passed == 1
 
@@ -238,7 +238,7 @@ def host_secret_absent():
     return "CODEJUDGE_HOST_SECRET" not in os.environ
 """.lstrip()
 
-    result = await runner.evaluate(task, code)
+    result = await runner.evaluate_generated_tests(task, code)
 
     assert result.passed == 1
 
@@ -277,7 +277,7 @@ def process_limit_enforced():
     return limited
 """.lstrip()
 
-    result = await runner.evaluate(task, code)
+    result = await runner.evaluate_generated_tests(task, code)
 
     assert result.passed == 1
 
@@ -291,7 +291,7 @@ async def test_output_capture_is_bounded(tmp_path: Path) -> None:
     )
     code = "print('x' * 8192)\nvalue = 1\n"
 
-    result = await runner.evaluate(task, code)
+    result = await runner.evaluate_generated_tests(task, code)
 
     assert result.passed == 1
     assert result.output_truncated is True
@@ -308,7 +308,7 @@ async def test_memory_exhaustion_is_reported_from_container_metadata(tmp_path: P
     )
     code = "chunks = []\nwhile True:\n    chunks.append(bytearray(8 * 1024 * 1024))\n"
 
-    result = await runner.evaluate(task, code)
+    result = await runner.evaluate_generated_tests(task, code)
 
     assert result.oom_killed is True
     assert result.exit_code == 137

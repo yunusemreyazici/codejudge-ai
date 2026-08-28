@@ -11,7 +11,7 @@ import stat
 import tempfile
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -20,6 +20,11 @@ from typing import Protocol
 
 from app.evaluator.models import RunnerCapability, RunnerResult
 from app.runners.docker_cli import CommandResult, DockerCli
+from app.runners.trusted_harness import (
+    HarnessProtocolError,
+    HarnessReport,
+    TrustedOfficialHarness,
+)
 from app.tasks.registry import RegisteredTask
 
 logger = logging.getLogger(__name__)
@@ -41,6 +46,33 @@ class DockerClient(Protocol):
         timeout_seconds: float,
         output_limit_bytes: int,
     ) -> CommandResult: ...
+
+    async def open(
+        self,
+        arguments: Sequence[str],
+        *,
+        output_limit_bytes: int,
+    ) -> InteractiveDockerProcess: ...
+
+
+class InteractiveDockerProcess(Protocol):
+    async def write_line(self, payload: bytes) -> None: ...
+
+    async def read_line(self, *, limit_bytes: int) -> bytes: ...
+
+    async def wait(self) -> int | None: ...
+
+    async def terminate(self) -> None: ...
+
+    @property
+    def stderr(self) -> str: ...
+
+    @property
+    def output_truncated(self) -> bool: ...
+
+
+class OfficialHarness(Protocol):
+    async def evaluate(self, task_id: str, transport: _CandidateTransport) -> HarnessReport: ...
 
 
 class DockerCapabilityFailure(StrEnum):
@@ -89,6 +121,33 @@ class _TestReport:
     import_error: bool
 
 
+class _CandidateTransport:
+    def __init__(self, process: InteractiveDockerProcess) -> None:
+        self._process = process
+        self._next_id = 1
+
+    async def request(self, payload: Mapping[str, object]) -> Mapping[str, object]:
+        request_id = self._next_id
+        self._next_id += 1
+        encoded = json.dumps({"id": request_id, **payload}, separators=(",", ":")).encode("utf-8")
+        if len(encoded) > _REPORT_LIMIT_BYTES:
+            raise HarnessProtocolError("Candidate protocol request exceeded its limit")
+        await self._process.write_line(encoded)
+        line = await self._process.read_line(limit_bytes=_REPORT_LIMIT_BYTES)
+        try:
+            response: object = json.loads(line)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise HarnessProtocolError("Candidate protocol returned invalid JSON") from error
+        if not isinstance(response, dict) or response.get("id") != request_id:
+            raise HarnessProtocolError("Candidate protocol response ID mismatch")
+        return response
+
+    async def shutdown(self) -> None:
+        response = await self.request({"op": "shutdown"})
+        if response.get("ok") is not True:
+            raise HarnessProtocolError("Candidate supervisor rejected shutdown")
+
+
 class DockerPythonRunner:
     """Evaluate Python code in an intentionally restricted, disposable container."""
 
@@ -100,6 +159,7 @@ class DockerPythonRunner:
         docker_binary: str = "docker",
         capability_attempts: int = _CAPABILITY_ATTEMPTS,
         capability_retry_delay_seconds: float = _CAPABILITY_RETRY_DELAY_SECONDS,
+        harness: OfficialHarness | None = None,
     ) -> None:
         self._config = config
         self._cli = cli or DockerCli(docker_binary)
@@ -107,6 +167,7 @@ class DockerPythonRunner:
         self._check_binary_path = cli is None
         self._capability_attempts = capability_attempts
         self._capability_retry_delay_seconds = capability_retry_delay_seconds
+        self._harness = harness or TrustedOfficialHarness()
         if capability_attempts <= 0 or capability_retry_delay_seconds < 0:
             raise ValueError("Capability retry settings must be bounded and nonnegative")
 
@@ -160,6 +221,173 @@ class DockerPythonRunner:
         )
 
     async def evaluate(self, task: RegisteredTask, code: str) -> RunnerResult:
+        """Run repository official tests without mounting private evaluator assets."""
+
+        started_at = time.monotonic()
+        capability = await self.check_capability()
+        if not capability.available:
+            return self._infrastructure_failure(started_at, capability.detail)
+
+        evaluation_id = uuid.uuid4().hex
+        container_name = f"codejudge-eval-{evaluation_id}"
+        effective_timeout = min(task.specification.timeout_seconds, self._config.timeout_seconds)
+        container_created = False
+        create_attempted = False
+        process: InteractiveDockerProcess | None = None
+        event_since = self._event_timestamp()
+
+        with tempfile.TemporaryDirectory(prefix="codejudge-docker-") as temporary_directory:
+            workspace = Path(temporary_directory) / "workspace"
+            self._prepare_candidate_workspace(workspace, code)
+            try:
+                create_attempted = True
+                create_result = await self._control_command(
+                    self._official_create_arguments(container_name, evaluation_id, workspace)
+                )
+                if create_result.exit_code != 0 or create_result.timed_out:
+                    return self._infrastructure_failure(
+                        started_at, "Docker could not create the evaluation container."
+                    )
+                container_created = True
+                create_output = create_result.stdout.strip().splitlines()
+                container_id = create_output[0] if create_output else container_name
+
+                try:
+                    process = await self._cli.open(
+                        ["start", "--attach", "--interactive", container_name],
+                        output_limit_bytes=self._config.output_limit_bytes,
+                    )
+                except OSError:
+                    return self._infrastructure_failure(
+                        started_at, "Docker could not start the evaluation container."
+                    )
+
+                try:
+                    async with asyncio.timeout(effective_timeout):
+                        transport = _CandidateTransport(process)
+                        report = await self._harness.evaluate(task.specification.id, transport)
+                        await transport.shutdown()
+                        exit_code = await process.wait()
+                except TimeoutError:
+                    await process.terminate()
+                    await self._kill(container_name)
+                    state = await self._inspect_state(container_name)
+                    return RunnerResult(
+                        exit_code=None if state is None else state.exit_code,
+                        stdout="",
+                        stderr=process.stderr,
+                        duration_seconds=time.monotonic() - started_at,
+                        passed=0,
+                        failed=0,
+                        total=0,
+                        timed_out=True,
+                        enforced_timeout_seconds=effective_timeout,
+                        output_truncated=process.output_truncated,
+                    )
+                except HarnessProtocolError as error:
+                    await process.terminate()
+                    await self._kill(container_name)
+                    state = await self._inspect_state(container_name)
+                    oom_killed = state is not None and state.oom_killed
+                    if not oom_killed and state is not None and state.exit_code == 137:
+                        oom_killed = await self._has_oom_event(
+                            container_id,
+                            container_name,
+                            event_since,
+                            self._event_timestamp(),
+                        )
+                    if oom_killed:
+                        return RunnerResult(
+                            exit_code=None if state is None else state.exit_code,
+                            stdout="",
+                            stderr=process.stderr,
+                            duration_seconds=time.monotonic() - started_at,
+                            passed=0,
+                            failed=0,
+                            total=0,
+                            enforced_timeout_seconds=effective_timeout,
+                            output_truncated=process.output_truncated,
+                            oom_killed=True,
+                        )
+                    return RunnerResult(
+                        exit_code=None,
+                        stdout="",
+                        stderr=process.stderr,
+                        duration_seconds=time.monotonic() - started_at,
+                        passed=0,
+                        failed=0,
+                        total=0,
+                        enforced_timeout_seconds=effective_timeout,
+                        output_truncated=process.output_truncated,
+                        sandbox_error=str(error),
+                    )
+
+                state = await self._inspect_state(container_name)
+                if state is None:
+                    return self._infrastructure_failure(
+                        started_at, "Docker could not inspect the evaluation container."
+                    )
+                oom_killed = state.oom_killed
+                if not oom_killed and state.exit_code == 137:
+                    oom_killed = await self._has_oom_event(
+                        container_id,
+                        container_name,
+                        event_since,
+                        self._event_timestamp(),
+                    )
+                if oom_killed:
+                    return RunnerResult(
+                        exit_code=state.exit_code,
+                        stdout="",
+                        stderr=process.stderr,
+                        duration_seconds=time.monotonic() - started_at,
+                        passed=0,
+                        failed=0,
+                        total=0,
+                        enforced_timeout_seconds=effective_timeout,
+                        output_truncated=process.output_truncated,
+                        oom_killed=True,
+                    )
+                if state.exit_code != 0:
+                    return RunnerResult(
+                        exit_code=state.exit_code,
+                        stdout="",
+                        stderr=process.stderr,
+                        duration_seconds=time.monotonic() - started_at,
+                        passed=0,
+                        failed=0,
+                        total=0,
+                        enforced_timeout_seconds=effective_timeout,
+                        output_truncated=process.output_truncated,
+                        sandbox_error="Sandbox exited without a valid structured test report.",
+                    )
+                return RunnerResult(
+                    exit_code=exit_code,
+                    stdout="",
+                    stderr=process.stderr,
+                    duration_seconds=time.monotonic() - started_at,
+                    passed=report.passed,
+                    failed=report.failed,
+                    total=report.total,
+                    enforced_timeout_seconds=effective_timeout,
+                    output_truncated=process.output_truncated,
+                    syntax_error=report.syntax_error,
+                    import_error=report.import_error,
+                )
+            except asyncio.CancelledError:
+                if process is not None:
+                    await asyncio.shield(process.terminate())
+                if container_created:
+                    await asyncio.shield(self._kill(container_name))
+                raise
+            finally:
+                if create_attempted:
+                    await asyncio.shield(
+                        self._remove(container_name, log_failure=container_created)
+                    )
+
+    async def evaluate_generated_tests(self, task: RegisteredTask, code: str) -> RunnerResult:
+        """Run already-validated Phase 6 generated pytest in a separate sandbox."""
         started_at = time.monotonic()
         capability = await self.check_capability()
         if not capability.available:
@@ -331,10 +559,12 @@ class DockerPythonRunner:
             "--read-only",
             "--cap-drop",
             "ALL",
+            "--cap-add",
+            "SETUID",
+            "--cap-add",
+            "SETGID",
             "--security-opt",
             "no-new-privileges=true",
-            "--user",
-            f"{_SANDBOX_UID}:{_SANDBOX_GID}",
             "--workdir",
             "/workspace",
             "--env",
@@ -345,12 +575,76 @@ class DockerPythonRunner:
             "PYTHONPATH=/workspace",
             "--env",
             "CODEJUDGE_REPORT_PATH=/results/report.json",
+            "--env",
+            "CODEJUDGE_GENERATED_PYTEST=1",
             "--tmpfs",
             "/tmp:rw,noexec,nosuid,nodev,size=64m",
             "--mount",
             f"type=bind,source={workspace},target=/workspace,readonly",
             "--mount",
             f"type=bind,source={report_path},target=/results/report.json",
+            "--init",
+            self._config.image,
+        ]
+
+    def _official_create_arguments(
+        self,
+        container_name: str,
+        evaluation_id: str,
+        workspace: Path,
+    ) -> list[str]:
+        memory = f"{self._config.memory_mb}m"
+        log_size_kib = max(1, (self._config.output_limit_bytes + 1023) // 1024)
+        return [
+            "create",
+            "--interactive",
+            "--name",
+            container_name,
+            "--label",
+            "codejudge.component=sandbox",
+            "--label",
+            f"codejudge.evaluation_id={evaluation_id}",
+            "--log-driver",
+            "local",
+            "--log-opt",
+            f"max-size={log_size_kib}k",
+            "--log-opt",
+            "max-file=1",
+            "--log-opt",
+            "compress=false",
+            "--network",
+            "none",
+            "--memory",
+            memory,
+            "--memory-swap",
+            memory,
+            "--cpus",
+            f"{self._config.cpus:g}",
+            "--pids-limit",
+            str(self._config.pids_limit),
+            "--ulimit",
+            f"fsize={_REPORT_LIMIT_BYTES}:{_REPORT_LIMIT_BYTES}",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--cap-add",
+            "SETUID",
+            "--cap-add",
+            "SETGID",
+            "--security-opt",
+            "no-new-privileges=true",
+            "--workdir",
+            "/workspace",
+            "--env",
+            "PYTHONDONTWRITEBYTECODE=1",
+            "--env",
+            "PYTHONUNBUFFERED=1",
+            "--env",
+            "PYTHONPATH=/workspace",
+            "--tmpfs",
+            "/tmp:rw,noexec,nosuid,nodev,size=64m",
+            "--mount",
+            f"type=bind,source={workspace},target=/workspace,readonly",
             "--init",
             self._config.image,
         ]
@@ -371,6 +665,14 @@ class DockerPythonRunner:
             path.chmod(0o555 if path.is_dir() else 0o444)
         workspace.chmod(0o555)
         report_path.chmod(0o666)
+
+    @staticmethod
+    def _prepare_candidate_workspace(workspace: Path, code: str) -> None:
+        workspace.mkdir()
+        solution = workspace / "solution.py"
+        solution.write_text(code, encoding="utf-8")
+        solution.chmod(0o444)
+        workspace.chmod(0o555)
 
     async def _inspect_state(self, container_name: str) -> _ContainerState | None:
         result = await self._control_command(

@@ -18,6 +18,53 @@ class CommandResult:
     output_truncated: bool = False
 
 
+class AttachedDockerProcess:
+    """Interactive Docker CLI process with bounded candidate stderr capture."""
+
+    def __init__(
+        self,
+        process: asyncio.subprocess.Process,
+        *,
+        output_limit_bytes: int,
+    ) -> None:
+        if process.stdin is None or process.stdout is None or process.stderr is None:
+            raise RuntimeError("Docker CLI interactive pipes are unavailable")
+        self._process = process
+        self._stdin = process.stdin
+        self._stdout = process.stdout
+        self._capture = _BoundedCapture(output_limit_bytes)
+        self._stderr_task = asyncio.create_task(self._capture.drain_stderr(process.stderr))
+
+    async def write_line(self, payload: bytes) -> None:
+        self._stdin.write(payload + b"\n")
+        await self._stdin.drain()
+
+    async def read_line(self, *, limit_bytes: int) -> bytes:
+        line = await self._stdout.readline()
+        if len(line) > limit_bytes or (len(line) == limit_bytes and not line.endswith(b"\n")):
+            raise ValueError("Docker protocol response exceeded its limit")
+        return line
+
+    async def wait(self) -> int | None:
+        await self._process.wait()
+        await self._stderr_task
+        return self._process.returncode
+
+    async def terminate(self) -> None:
+        if self._process.returncode is None:
+            self._process.kill()
+        await self._process.wait()
+        await self._stderr_task
+
+    @property
+    def stderr(self) -> str:
+        return self._capture.stderr
+
+    @property
+    def output_truncated(self) -> bool:
+        return self._capture.truncated
+
+
 class _BoundedCapture:
     def __init__(self, limit_bytes: int) -> None:
         self._limit_bytes = limit_bytes
@@ -59,6 +106,21 @@ class DockerCli:
 
     def __init__(self, binary: str = "docker") -> None:
         self.binary = binary
+
+    async def open(
+        self,
+        arguments: Sequence[str],
+        *,
+        output_limit_bytes: int,
+    ) -> AttachedDockerProcess:
+        process = await asyncio.create_subprocess_exec(
+            self.binary,
+            *arguments,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        return AttachedDockerProcess(process, output_limit_bytes=output_limit_bytes)
 
     async def run(
         self,

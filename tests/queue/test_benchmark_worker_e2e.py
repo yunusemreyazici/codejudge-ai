@@ -1,5 +1,7 @@
+import json
 import os
 from decimal import Decimal
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -8,7 +10,7 @@ from httpx import ASGITransport, AsyncClient
 from app.ai.providers.base import ProviderError
 from app.analysis.factory import create_static_analysis_engine
 from app.benchmarks.datasets import BenchmarkDatasetRegistry
-from app.benchmarks.models import PricingSnapshot
+from app.benchmarks.models import DatasetTaskEntry, PricingSnapshot
 from app.benchmarks.pricing import PricingCatalog
 from app.benchmarks.queue import BenchmarkOutboxPublisher, BenchmarkQueue
 from app.benchmarks.service import BenchmarkService
@@ -20,12 +22,15 @@ from app.main import create_app
 from app.runners.docker_cli import DockerCli
 from app.runners.docker_runner import DockerPythonRunner
 from app.runners.factory import create_python_runner
+from app.snapshots.fingerprints import task_fingerprint
+from app.snapshots.fingerprints import tests_fingerprint as _tests_fingerprint
 from app.snapshots.metadata import ExecutionMetadataCollector
 from app.tasks.registry import TaskRegistry
-from tests.ai.fakes import FakeProvider
+from tests.ai.fakes import FakeProvider, TaskAwareFakeProvider
 from tests.conftest import CORRECT_LRU, INCORRECT_LRU
 from tests.database.conftest import DatabaseHarness
 from tests.queue.conftest import RedisHarness
+from tests.tasks.candidates import INCORRECT_CANDIDATES
 
 pytestmark = [
     pytest.mark.database,
@@ -194,4 +199,157 @@ async def test_phase7_fake_models_real_postgres_redis_docker_benchmark_e2e(
     )
     assert remaining.exit_code == 0
     assert "codejudge-eval-" not in remaining.stdout
+    await queue.close()
+
+
+async def test_multitask_fake_models_real_services_and_static_analysis_e2e(
+    database_harness: DatabaseHarness,
+    redis_harness: RedisHarness,
+    tmp_path: Path,
+) -> None:
+    del redis_harness
+    database_url = os.environ["CODEJUDGE_TEST_DATABASE_URL"]
+    redis_url = os.environ["CODEJUDGE_TEST_REDIS_URL"]
+    settings = Settings(
+        log_level="CRITICAL",
+        persistence_enabled=True,
+        database_url=database_url,
+    )
+    tasks = TaskRegistry.default()
+    selected_ids = ("dependency-resolver", "retry-backoff", "ttl-cache")
+    entries: list[DatasetTaskEntry] = []
+    for task_id in selected_ids:
+        task = tasks.get(task_id)
+        tests_hash = _tests_fingerprint(task)
+        entries.append(
+            DatasetTaskEntry(
+                task_id=task_id,
+                task_version=task.specification.version,
+                task_fingerprint=task_fingerprint(task, tests_hash),
+                tests_fingerprint=tests_hash,
+                weight=1,
+            )
+        )
+    definition = {
+        "dataset_id": "codejudge-ci-portfolio",
+        "dataset_version": "1",
+        "title": "Representative CI portfolio",
+        "description": "Three-task deterministic cross-task benchmark fixture.",
+        "task_entries": [entry.model_dump(mode="json") for entry in reversed(entries)],
+    }
+    (tmp_path / "portfolio.json").write_text(json.dumps(definition), encoding="utf-8")
+    datasets = BenchmarkDatasetRegistry(tmp_path, tasks)
+    datasets.load()
+
+    runner = create_python_runner(settings)
+    assert isinstance(runner, DockerPythonRunner)
+    capability = await runner.check_capability()
+    if not capability.available:
+        diagnostic = f"reason={capability.reason or 'unknown'} detail={capability.detail}"
+        if os.getenv("CODEJUDGE_REQUIRE_DOCKER") == "1":
+            pytest.fail(f"Docker sandbox is required: {diagnostic}")
+        pytest.skip(diagnostic)
+    evaluations = EvaluationService(
+        EvaluationEngine(
+            registry=tasks,
+            runners={"python": runner},
+            max_code_size=settings.max_code_size,
+            analysis_engine=create_static_analysis_engine(settings),
+        ),
+        ExecutionMetadataCollector(settings),
+        database_harness.repository,
+    )
+    benchmarks = BenchmarkService(
+        database_harness.benchmark_repository,
+        datasets,
+        tasks,
+        evaluations,
+    )
+    application = create_app(
+        settings=Settings(log_level="CRITICAL"),
+        registry=tasks,
+        benchmark_service=benchmarks,
+    )
+    payload = {
+        "dataset_id": "codejudge-ci-portfolio",
+        "dataset_version": "1",
+        "models": [
+            {"provider_id": "fake", "model": "portfolio-good", "temperature": 0},
+            {"provider_id": "fake", "model": "portfolio-bad", "temperature": 0},
+        ],
+        "samples_per_task": 1,
+    }
+    async with AsyncClient(
+        transport=ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/v1/benchmarks", json=payload)
+    assert response.status_code == 202
+    run_id = UUID(response.json()["benchmark_run_id"])
+
+    identity = uuid4().hex
+    queue = BenchmarkQueue(
+        redis_url,
+        stream=f"codejudge:portfolio-e2e:{identity}",
+        group=f"codejudge-portfolio-e2e-{identity}",
+    )
+    await queue.ensure_group()
+    publisher = BenchmarkOutboxPublisher(
+        database_harness.benchmark_repository,
+        queue,
+        retry_base_delay_seconds=0.01,
+    )
+    assert await publisher.dispatch_once() == 6
+    outputs: dict[tuple[str, str], object] = {}
+    for task_id in selected_ids:
+        reference_path = tasks.get(task_id).reference_path
+        assert reference_path is not None
+        outputs[("portfolio-good", task_id)] = {
+            "language": "python",
+            "source": reference_path.read_text(encoding="utf-8"),
+        }
+        outputs[("portfolio-bad", task_id)] = {
+            "language": "python",
+            "source": INCORRECT_CANDIDATES[task_id],
+        }
+    provider = TaskAwareFakeProvider(outputs)
+    worker = BenchmarkWorker(
+        worker_id="portfolio-e2e",
+        providers={"fake": provider},
+        repository=database_harness.benchmark_repository,
+        queue=queue,
+        datasets=datasets,
+        tasks=tasks,
+        evaluations=evaluations,
+        max_code_size=settings.max_code_size,
+        lease_seconds=10,
+        retry_base_delay_seconds=0.01,
+    )
+    for _ in range(6):
+        message = await queue.consume("portfolio-e2e", block_ms=100)
+        assert message is not None
+        await worker.process_message(message)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        summary = await client.get(f"/api/v1/benchmarks/{run_id}")
+        leaderboard = await client.get(f"/api/v1/benchmarks/{run_id}/leaderboard")
+        samples = await client.get(f"/api/v1/benchmarks/{run_id}/samples")
+
+    assert summary.json()["status"] == "completed"
+    assert summary.json()["planned_samples"] == 6
+    assert summary.json()["completed_samples"] == 6
+    entries = leaderboard.json()
+    assert [entry["model"] for entry in entries] == ["portfolio-good", "portfolio-bad"]
+    assert entries[0]["weighted_mean_score"] > entries[1]["weighted_mean_score"]
+    assert entries[0]["coverage"] == entries[1]["coverage"] == 1
+    assert {task["task_id"] for task in entries[0]["per_task"]} == set(selected_ids)
+    assert len(samples.json()) == 6
+    assert all(sample["evaluation_id"] for sample in samples.json())
+    assert len(provider.requests) == 6
+    requested_pairs = sorted(
+        (request.model, request.input_payload["public_task"]["id"]) for request in provider.requests
+    )
+    assert requested_pairs == sorted(outputs)
+    assert await queue.pending_count() == 0
     await queue.close()

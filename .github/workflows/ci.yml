@@ -89,7 +89,7 @@ jobs:
           docker info
           docker image inspect codejudge-python-sandbox:phase2
 
-      - name: Run Docker sandbox tests
+      - name: Run Docker sandbox, hidden-test privacy, and task-portfolio tests
         run: pytest -v -m sandbox tests/sandbox
         env:
           CODEJUDGE_REQUIRE_DOCKER: "1"
@@ -201,7 +201,7 @@ jobs:
           docker version
           docker info
           docker image inspect codejudge-python-sandbox:phase2
-      - name: Run fake-model real-Docker benchmark end-to-end test
+      - name: Run single-task and cross-task fake-model benchmark end-to-end tests
         run: pytest -v tests/queue/test_benchmark_worker_e2e.py
       - name: Verify benchmark sandbox container cleanup
         run: |

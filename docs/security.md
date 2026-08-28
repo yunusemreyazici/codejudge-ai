@@ -2,15 +2,15 @@
 
 ## Scope and threat model
 
-Phase 7 assumes submitted Python and all LLM output are actively malicious. A candidate may loop
+Phase 7.1 assumes submitted Python and all LLM output are actively malicious. A candidate may loop
 forever, allocate memory, emit unlimited output, spawn processes, inspect its environment, write
 files, access task tests, attempt network connections, or probe host resources.
 
 The Docker backend materially reduces exposure from these actions by running each evaluation in a
 new, restricted container. Docker is not a perfect security boundary. The Docker daemon, container
-runtime, and host kernel remain trusted. Kernel or runtime escapes, denial of service against the
-Docker daemon, side channels, and vulnerabilities in Python or pytest are outside Phase 2's
-protection.
+runtime, host-side official-test harness, and host kernel remain trusted. Kernel or runtime escapes,
+denial of service against the Docker daemon, side channels, and vulnerabilities in Python are
+outside the implemented protection.
 
 Static analysis is a separate process-only path and does not weaken the Docker boundary. Ruff,
 mypy, Bandit, and Radon receive a disposable directory containing only the exact `solution.py`.
@@ -28,28 +28,31 @@ here.
 
 ## Implemented restrictions
 
-Every Docker evaluation receives a unique name and labels, then runs with:
+Every Docker evaluation receives a unique name and labels. Official evaluations contain a small
+root supervisor whose only privileged operation is dropping a child process to the candidate
+identity. Candidate code itself runs with:
 
-- UID and GID `10001`, reinforced by both the image and runtime arguments
+- UID and GID `10001`, with zero effective Linux capabilities
 - `--network none`
 - hard memory and memory-swap ceilings
 - a fractional CPU allocation
 - a PID limit
 - a read-only root filesystem
-- all Linux capabilities dropped
+- all capabilities dropped except `SETUID`/`SETGID` on the supervisor so it can create the
+  candidate-UID child; the child loses those capabilities during the UID transition
 - `no-new-privileges`
 - a bounded writable `/tmp` tmpfs with `noexec`, `nosuid`, and `nodev`
-- a read-only bind mount containing only `solution.py` and the required task tests
-- one writable, pre-created report file with a 64 KiB file-size limit
+- a read-only bind mount containing only `solution.py`
+- a bounded JSON-lines protocol over the attached container's stdin/stdout
 - an application-level execution timeout
 - bounded combined stdout/stderr capture that continues draining discarded bytes
 - a bounded per-container Docker log using the local log driver
 
 The runner never uses privileged mode, host networking, the host root filesystem, home or SSH
 directories, or `/var/run/docker.sock`. Docker commands are argument arrays and never shell-built.
-The report mount cannot create sibling files; the only general-purpose writable filesystem is the
-size-bounded `/tmp` tmpfs. Containers are force-removed in a `finally` block after success,
-failure, malformed reports, OOM, timeout, and cancellation.
+The only general-purpose writable filesystem is the size-bounded `/tmp` tmpfs. Containers are
+force-removed in a `finally` block after success, failure, malformed protocol responses, OOM,
+timeout, and cancellation.
 
 OOM results require runtime evidence: either the container's inspected `OOMKilled` state or a
 Docker `oom` event queried before cleanup with exact container identity and bounded execution
@@ -64,7 +67,6 @@ The host application's environment is not forwarded. The runner passes only:
 - `PYTHONDONTWRITEBYTECODE=1`
 - `PYTHONUNBUFFERED=1`
 - the fixed candidate import path (`PYTHONPATH=/workspace`)
-- the fixed in-container structured-report path
 
 The image itself may define ordinary Python runtime variables. API keys, cloud credentials,
 database URLs, CI tokens, GitHub tokens, and SSH variables from the API process are not copied into
@@ -77,13 +79,31 @@ service. Candidate containers never receive the Docker socket or Docker credenti
 must protect daemon access, keep Docker and the host kernel patched, restrict who can change the
 sandbox image, and monitor containers carrying the `codejudge.component=sandbox` label.
 
-## Task-test visibility and result integrity
+## Official-test privacy and result integrity
 
-Task test source is never returned by the HTTP API. The required tests are nevertheless mounted
-read-only inside the evaluation container, so malicious candidate code can inspect them. Phase 2
-does not guarantee filesystem-level concealment of bundled tests or defend the pytest process from
-all in-container test-tampering techniques. Strong anti-cheating and hidden-test confidentiality
-need a different execution protocol in a later phase.
+Official deterministic tests execute as trusted host-side case plans. Their source, expected
+values, case names, canaries, reference implementations, and repository paths are never mounted or
+copied into the candidate container. The host sends one schema-bounded invocation at a time to a
+root supervisor. That supervisor starts a fresh UID/GID `10001` candidate interpreter per test
+case and forwards only the current operation. It never forwards future operations or expected
+results. Stateful sequences remain in that candidate process, while cases are isolated from one
+another.
+
+The candidate-visible runtime consists of `solution.py`, the generic baked-in invocation worker,
+the Python runtime, and normal base-image files. The worker can construct public classes, invoke
+functions/methods, await returned awaitables, preserve object identity within a case, create a
+small allowlisted set of callback/async-worker probes, and return JSON-safe results or exception
+type/message data. It cannot select host paths or commands. Private assertions remain on the host.
+
+Real-Docker regression tests place stable private canaries in host-only official-test and reference
+files, then run a malicious candidate that traverses readable `/workspace`, `/tmp`, `/app`, runtime
+paths, and accessible `/proc` metadata. The test repeats three times and requires a minimal
+workspace, no private filenames, no canary content, candidate UID/GID `10001`, and zero effective
+capabilities.
+
+The development-only local backend still copies pytest files into a local child workspace and is
+not a privacy or security boundary; it must never execute untrusted code. The hidden-test guarantee
+applies to the Docker backend used by workers and benchmarks.
 
 ## Persisted source and database boundary
 
@@ -133,14 +153,26 @@ logged or persisted. Only a logical provider ID and non-secret provenance are st
 
 Generated tests are also untrusted. Deterministic structural checks reject malformed, oversized,
 duplicate, plugin-declaring, or prohibited test structures, but these checks are not the security
-boundary. Every generated test runs in the same non-root, no-network, read-only, resource-limited
-Docker sandbox—first against a trusted reference, and only then against the candidate. Generated
-tests never execute in FastAPI, a worker process, or directly on the host.
+boundary. Each generated pytest runs in a separate non-root, no-network, read-only,
+resource-limited Docker invocation—first against a workspace containing only the trusted reference
+and that generated test, and only then against a distinct workspace containing only the candidate
+and that generated test. Candidate execution never shares a workspace or process with the trusted
+reference. Generated tests never execute in FastAPI, a worker process, or directly on the host.
+
+Unlike official deterministic tests, an adversarial test is generated model output and must be
+present in the candidate's generated-test sandbox so pytest can execute it. It is therefore
+readable by that candidate. This does not expose official tests, private canaries, or references;
+it remains an explicit limitation of the supplemental Phase 6 robustness signal.
 
 The reference solution is private evaluator material. It is packaged for worker use but is never
 returned by task/evaluation APIs, included in an LLM request, written to Redis, or logged. Passing
 the reference is a strong guardrail against invalid generated tests; it is not formal proof that a
 test fully represents the public specification.
+
+This rule applies uniformly to every `codejudge-core@2` task. Portfolio privacy tests enumerate the
+dataset and confirm neither reference bytes nor evaluator paths appear in task listings/details or
+coding-provider payloads. Function-based, class-based, time-dependent, and async task references
+all use the same discovery and Docker adversarial-validation path.
 
 Prompt injection remains possible at the model reasoning layer. Phase 6 limits its impact by
 keeping deterministic scoring authoritative, separating AI findings and provenance, validating
@@ -169,7 +201,8 @@ preserving the existing prompt-injection separation.
 - Host resource pressure below or outside the configured cgroup controls, including Docker daemon
   overhead and temporary container logs
 - Side channels between workloads sharing a kernel
-- Malicious behavior against Python, pytest, or the trusted entrypoint
+- Malicious behavior against Python, generated-test pytest, or trusted invocation components
+- Candidate visibility into the specific AI-generated adversarial test being run against it
 - Host I/O pressure up to the bounded container log and timeout ceilings
 - Local backend execution, which has no security boundary and must not receive untrusted code
 - Exposure of stored candidate source when the unauthenticated Phase 5 API is deployed without an

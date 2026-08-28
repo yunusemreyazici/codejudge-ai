@@ -1,0 +1,9 @@
+{
+  "id": "rate-limiter",
+  "title": "Sliding-Window Rate Limiter",
+  "description": "Implement class SlidingWindowRateLimiter. SlidingWindowRateLimiter(limit: int, window_seconds: float) requires a positive integer limit and positive window. allow(key: str, now: float) returns True and records the event when fewer than limit accepted events for that key remain in the window; otherwise it returns False and does not record the rejected attempt. An accepted event expires when its timestamp <= now - window_seconds, so an event exactly one window old no longer counts. Keys are independent. Timestamps must be nondecreasing per key; allow raises ValueError for a timestamp earlier than the previous call for that key.",
+  "language": "python",
+  "entrypoint": "solution:SlidingWindowRateLimiter",
+  "timeout_seconds": 5.0,
+  "version": "1.0"
+}

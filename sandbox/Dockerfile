@@ -11,8 +11,10 @@ RUN groupadd --gid "${SANDBOX_GID}" sandbox \
     && python -m pip uninstall --yes setuptools wheel pip
 
 COPY --chown=root:root entrypoint.py /opt/codejudge/entrypoint.py
+COPY --chown=root:root candidate_worker.py /opt/codejudge/candidate_worker.py
+COPY --chown=root:root pytest_entrypoint.py /opt/codejudge/pytest_entrypoint.py
 
 WORKDIR /workspace
-USER 10001:10001
+USER root
 
 ENTRYPOINT ["python", "/opt/codejudge/entrypoint.py"]

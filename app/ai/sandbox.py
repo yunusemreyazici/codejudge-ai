@@ -51,4 +51,4 @@ class DockerAdversarialSandbox:
                 ),
                 tests_path=tests_path,
             )
-            return await self._runner.evaluate(task, solution_source)
+            return await self._runner.evaluate_generated_tests(task, solution_source)

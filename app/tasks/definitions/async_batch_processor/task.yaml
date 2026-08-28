@@ -1,0 +1,9 @@
+{
+  "id": "async-batch-processor",
+  "title": "Bounded Async Batch Processor",
+  "description": "Implement async process_batch(items, worker, concurrency: int) -> list. worker is an async callable invoked exactly once per input item. Run at most concurrency worker calls simultaneously while allowing available parallelism, and return results in the same order as the input regardless of completion order. concurrency must be a positive non-boolean integer and is validated even for an empty input. If any worker raises, cancel and await all unfinished worker tasks, then re-raise the original exception. If process_batch itself is cancelled, cancel and await all worker tasks before propagating cancellation. Empty input returns an empty list.",
+  "language": "python",
+  "entrypoint": "solution:process_batch",
+  "timeout_seconds": 5.0,
+  "version": "1.0"
+}

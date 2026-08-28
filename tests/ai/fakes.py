@@ -40,6 +40,34 @@ class FakeProvider:
         self.closed = True
 
 
+class TaskAwareFakeProvider:
+    """Resolve coding output by model and public task, independent of queue ordering."""
+
+    def __init__(self, outputs: dict[tuple[str, str], object]) -> None:
+        self.outputs = outputs
+        self.requests: list[StructuredLLMRequest] = []
+        self.closed = False
+
+    async def complete_structured(self, request: StructuredLLMRequest) -> ProviderResponse:
+        self.requests.append(request)
+        public_task = request.input_payload.get("public_task")
+        if not isinstance(public_task, dict) or not isinstance(public_task.get("id"), str):
+            raise ProviderError("malformed_fake_request")
+        output = self.outputs[(request.model, public_task["id"])]
+        if isinstance(output, ProviderError):
+            raise output
+        content = output if isinstance(output, str) else json.dumps(output)
+        return ProviderResponse(
+            content=content,
+            response_id=f"fake-task-{len(self.requests)}",
+            usage=ProviderUsage(input_tokens=100, output_tokens=50),
+            latency_ms=7,
+        )
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 class FakeSandbox:
     def __init__(
         self,
@@ -63,7 +91,7 @@ class FakeSandbox:
     ) -> RunnerResult:
         del task_id, timeout_seconds
         self.calls.append((solution_source, test_source))
-        is_reference = "Trusted LRU cache oracle" in solution_source
+        is_reference = solution_source.lstrip().startswith('"""Trusted ')
         if is_reference and self.reference_timed_out:
             return RunnerResult(
                 exit_code=None,
@@ -119,6 +147,23 @@ def generated_output() -> dict[str, object]:
                     "    cache.put(1, 1)\n"
                     "    cache.put(1, 2)\n"
                     "    assert cache.get(1) == 2\n"
+                ),
+            }
+        ]
+    }
+
+
+def generated_retry_output() -> dict[str, object]:
+    return {
+        "tests": [
+            {
+                "name": "test_retry_cap_boundary",
+                "rationale": "Exercise the public cap and attempt semantics.",
+                "code": (
+                    "from solution import retry_delay\n\n"
+                    "def test_retry_cap_boundary():\n"
+                    "    assert retry_delay(1, 2, 8) == 2\n"
+                    "    assert retry_delay(4, 2, 8) == 8\n"
                 ),
             }
         ]
