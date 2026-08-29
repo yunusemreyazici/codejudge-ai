@@ -24,7 +24,7 @@ from app.benchmarks.models import (
 )
 from app.benchmarks.prompts import CODING_PROMPT_HASH
 from app.benchmarks.repositories import BenchmarkRepository, BenchmarkResultRow
-from app.benchmarks.statistics import build_leaderboard
+from app.benchmarks.statistics import build_leaderboard, metric_summary
 from app.db.repositories import EvaluationRepository
 from app.snapshots.fingerprints import source_identity
 from app.snapshots.models import EvaluationSnapshot
@@ -97,6 +97,7 @@ class BenchmarkExporter:
             if run.status is BenchmarkRunStatus.FAILED or not meaningful_results
             else build_leaderboard(run.model_configs, metric_rows)
         )
+        leaderboard_by_config = {entry.model_config_id: entry for entry in leaderboard}
         document: dict[str, Any] = {
             "schema_version": "2",
             "run": {
@@ -143,8 +144,9 @@ class BenchmarkExporter:
             },
             "metric_semantics": {
                 "weighted_mean_score": (
-                    "Task-weighted mean deterministic score over completed evaluations only; "
-                    "this remains the primary ranking metric."
+                    "Within each model/task pair, completed deterministic scores are averaged; "
+                    "those task means then receive the dataset task weights exactly once. This "
+                    "remains the primary ranking metric."
                 ),
                 "coverage": "Completed evaluations divided by all planned samples.",
                 "successful_generation_rate": (
@@ -166,8 +168,21 @@ class BenchmarkExporter:
                     "by completed evaluations."
                 ),
                 "coverage_adjusted_deterministic_score": (
-                    "Supplemental task-weighted mean over all planned samples, assigning zero "
-                    "only to missing evaluations. Primary ranking is unchanged."
+                    "Within each model/task pair, missing planned evaluations contribute zero; "
+                    "the resulting task means then receive dataset task weights exactly once. "
+                    "Primary ranking is unchanged."
+                ),
+                "standard_deviation": (
+                    "Sample standard deviation (n-1 denominator); unavailable for fewer than "
+                    "two observed values."
+                ),
+                "confidence_interval_95": (
+                    "Two-sided Student-t interval for the arithmetic mean of completed observed "
+                    "scores. It describes only these samples and not future provider behavior."
+                ),
+                "stability_label": (
+                    "Supplemental label from observed score sample standard deviation: high at "
+                    "most 5, moderate above 5 through 15, low above 15; unavailable for n < 2."
                 ),
                 "generation_latency": "Provider generation request latency.",
                 "test_execution_duration": (
@@ -178,7 +193,14 @@ class BenchmarkExporter:
                     "completion; includes queueing and generation."
                 ),
             },
-            "models": [_model_document(config, metric_rows) for config in run.model_configs],
+            "models": [
+                _model_document(
+                    config,
+                    metric_rows,
+                    leaderboard_by_config.get(config.model_config_id),
+                )
+                for config in run.model_configs
+            ],
             "samples": sample_documents,
             "per_task": _per_task_documents(leaderboard),
             "leaderboard": [entry.model_dump(mode="json") for entry in leaderboard],
@@ -314,6 +336,10 @@ def render_report(artifacts: BenchmarkArtifacts) -> str:
     else:
         lines.extend(_leaderboard_section(leaderboard, models))
         lines.extend(_per_task_section(document["per_task"]))
+        lines.extend(_repeated_statistics_section(leaderboard))
+        lines.extend(_stability_section(leaderboard))
+        lines.extend(_correctness_consistency_section(leaderboard))
+        lines.extend(_variable_tasks_section(document["per_task"]))
     lines.extend(_reliability_section(models))
     lines.extend(_cost_section(models, document["evaluator"]))
     lines.extend(_latency_section(models))
@@ -414,7 +440,11 @@ def _ai_assessment_document(snapshot: EvaluationSnapshot) -> dict[str, Any] | No
     }
 
 
-def _model_document(config: Any, rows: list[BenchmarkResultRow]) -> dict[str, Any]:
+def _model_document(
+    config: Any,
+    rows: list[BenchmarkResultRow],
+    leaderboard_entry: Any | None,
+) -> dict[str, Any]:
     selected = [row for row in rows if row.config.model_config_id == config.model_config_id]
     generated = [row for row in selected if row.artifact is not None]
     evaluated = [row for row in selected if row.deterministic_score is not None]
@@ -435,6 +465,7 @@ def _model_document(config: Any, rows: list[BenchmarkResultRow]) -> dict[str, An
         ),
     }
     costs: dict[str, Decimal] = {}
+    cost_observations: dict[str, list[Decimal]] = {}
     samples_with_cost = 0
     for row in generated:
         artifact = row.artifact
@@ -442,6 +473,7 @@ def _model_document(config: Any, rows: list[BenchmarkResultRow]) -> dict[str, An
             costs[artifact.currency] = (
                 costs.get(artifact.currency, Decimal()) + artifact.generation_cost
             )
+            cost_observations.setdefault(artifact.currency, []).append(artifact.generation_cost)
             samples_with_cost += 1
     latencies = [
         row.artifact.generation_latency_ms for row in generated if row.artifact is not None
@@ -467,6 +499,36 @@ def _model_document(config: Any, rows: list[BenchmarkResultRow]) -> dict[str, An
         complete_coverage=complete_cost_coverage,
         empty_status="not_applicable_no_correct_evaluation",
     )
+    mean_cost_per_planned_sample, planned_cost_status = _per_unit_cost(
+        costs,
+        denominator=len(selected),
+        complete_coverage=samples_with_cost == len(selected) and bool(selected),
+        empty_status="not_applicable_no_planned_sample",
+    )
+    cost_distribution_status = (
+        "available"
+        if complete_cost_coverage
+        else "not_applicable_no_successful_generation"
+        if not generated
+        else "unknown_incomplete_cost_coverage"
+    )
+    cost_distributions = (
+        {
+            currency: metric_summary([float(value) for value in values]).model_dump(mode="json")
+            for currency, values in sorted(cost_observations.items())
+        }
+        if complete_cost_coverage
+        else {}
+    )
+    deterministic_scores = [
+        float(row.deterministic_score) for row in evaluated if row.deterministic_score is not None
+    ]
+    score_distribution = (
+        metric_summary(deterministic_scores)
+        if leaderboard_entry is None
+        else leaderboard_entry.deterministic_scores
+    )
+    score_interval = None if leaderboard_entry is None else leaderboard_entry.confidence_interval_95
     pricing = None if config.pricing is None else config.pricing.model_dump(mode="json")
     return {
         "model_config_id": config.model_config_id,
@@ -498,6 +560,10 @@ def _model_document(config: Any, rows: list[BenchmarkResultRow]) -> dict[str, An
         "failure_codes": dict(sorted(failures.items())),
         "token_usage": tokens,
         "actual_generation_costs": dict(sorted(costs.items())),
+        "generation_cost_distributions": cost_distributions,
+        "generation_cost_distribution_status": cost_distribution_status,
+        "mean_cost_per_planned_sample": mean_cost_per_planned_sample,
+        "mean_cost_per_planned_sample_status": planned_cost_status,
         "samples_with_cost": samples_with_cost,
         "cost_per_successful_generation": cost_per_successful_generation,
         "cost_per_successful_generation_status": generation_cost_status,
@@ -506,10 +572,36 @@ def _model_document(config: Any, rows: list[BenchmarkResultRow]) -> dict[str, An
         "mean_generation_latency_ms": _mean(latencies),
         "median_generation_latency_ms": _median(latencies),
         "p95_generation_latency_ms": _p95(latencies),
+        "generation_latency_distribution_ms": metric_summary(
+            [float(value) for value in latencies]
+        ).model_dump(mode="json"),
         "mean_test_execution_seconds": _mean(test_execution_durations),
         "median_test_execution_seconds": _median(test_execution_durations),
         "p95_test_execution_seconds": _p95(test_execution_durations),
+        "test_execution_distribution_seconds": metric_summary(
+            [float(value) for value in test_execution_durations]
+        ).model_dump(mode="json"),
         "mean_evaluation_lifecycle_seconds": _mean(evaluation_lifecycle_durations),
+        "evaluation_lifecycle_distribution_seconds": metric_summary(
+            [float(value) for value in evaluation_lifecycle_durations]
+        ).model_dump(mode="json"),
+        "deterministic_score_distribution": score_distribution.model_dump(mode="json"),
+        "confidence_interval_95": (
+            None if score_interval is None else score_interval.model_dump(mode="json")
+        ),
+        "stability_label": (
+            "not_enough_samples" if leaderboard_entry is None else leaderboard_entry.stability_label
+        ),
+        "correctness_consistency": (
+            None
+            if leaderboard_entry is None
+            else leaderboard_entry.correctness_consistency.model_dump(mode="json")
+        ),
+        "reliability": (
+            None
+            if leaderboard_entry is None
+            else leaderboard_entry.reliability.model_dump(mode="json")
+        ),
     }
 
 
@@ -575,14 +667,24 @@ def _per_task_documents(leaderboard: list[Any]) -> list[dict[str, Any]]:
                     "model": entry.model,
                     "model_configuration_fingerprint": entry.model_configuration_fingerprint,
                     "samples": task.sample_count,
+                    "samples_planned": task.planned_samples,
+                    "samples_completed": task.completed_samples,
+                    "coverage": task.coverage,
                     "mean_deterministic_score": task.scores.mean,
+                    "median_deterministic_score": task.scores.median,
+                    "minimum_deterministic_score": task.scores.minimum,
+                    "maximum_deterministic_score": task.scores.maximum,
+                    "score_standard_deviation": task.scores.standard_deviation,
                     "coverage_adjusted_deterministic_score": (
                         task.coverage_adjusted_deterministic_score
                     ),
                     "correctness_pass_rate": task.correctness_pass_rate,
+                    "correctness_consistency": task.correctness_consistency,
+                    "coverage_complete": task.coverage_complete,
                     "end_to_end_success_rate": task.end_to_end_success_rate,
                     "perfect_deterministic_score_rate": (task.perfect_deterministic_score_rate),
                     "generation_failures": task.generation_failures,
+                    "generation_failure_rate": task.generation_failure_rate,
                     "evaluation_failures": task.evaluation_failures,
                 }
             )
@@ -690,18 +792,119 @@ def _per_task_section(rows: list[dict[str, Any]]) -> list[str]:
     lines = [
         "## Per-Task Results",
         "",
-        "| Task | Model | Samples | Deterministic mean | Coverage-adjusted score | "
-        "Correctness pass | End-to-end success | Perfect deterministic score |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Task | Model | Completed / planned | Coverage | Mean | Median | Min | Max | "
+        "Std dev | Correctness | End-to-end | Generation failures |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:
         lines.append(
-            f"| {_cell(row['task_id'])} | {_cell(row['model'])} | {row['samples']} | "
+            f"| {_cell(row['task_id'])} | {_cell(row['model'])} | "
+            f"{row['samples_completed']} / {row['samples_planned']} | "
+            f"{_percent(row['coverage'])} | "
             f"{_number(row['mean_deterministic_score'])} | "
-            f"{_number(row['coverage_adjusted_deterministic_score'])} | "
+            f"{_number(row['median_deterministic_score'])} | "
+            f"{_number(row['minimum_deterministic_score'])} | "
+            f"{_number(row['maximum_deterministic_score'])} | "
+            f"{_number(row['score_standard_deviation'])} | "
             f"{_percent(row['correctness_pass_rate'])} | "
             f"{_percent(row['end_to_end_success_rate'])} | "
-            f"{_percent(row['perfect_deterministic_score_rate'])} |"
+            f"{row['generation_failures']} / {row['samples_planned']} "
+            f"({_percent(row['generation_failure_rate'])}) |"
+        )
+    return [*lines, ""]
+
+
+def _repeated_statistics_section(entries: list[dict[str, Any]]) -> list[str]:
+    lines = [
+        "## Repeated-Sample Statistics",
+        "",
+        "Distributions use completed deterministic evaluations. Standard deviation is the "
+        "sample standard deviation (n-1); the 95% interval is a two-sided Student-t interval "
+        "for the observed arithmetic mean and does not predict future provider behavior.",
+        "",
+        "| Model | n | Mean | Median | Min | Max | Std dev | 95% CI |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+    ]
+    for entry in entries:
+        distribution = entry["deterministic_scores"]
+        lines.append(
+            f"| {_cell(entry['display_name'])} | {distribution['count']} | "
+            f"{_number(distribution['mean'])} | {_number(distribution['median'])} | "
+            f"{_number(distribution['minimum'])} | {_number(distribution['maximum'])} | "
+            f"{_number(distribution['standard_deviation'])} | "
+            f"{_confidence_interval(entry['confidence_interval_95'])} |"
+        )
+    return [*lines, ""]
+
+
+def _stability_section(entries: list[dict[str, Any]]) -> list[str]:
+    lines = [
+        "## Stability",
+        "",
+        "Stability is supplemental and never changes ranking: high means score standard "
+        "deviation ≤ 5, moderate means > 5 and ≤ 15, low means > 15. Fewer than two completed "
+        "observations is reported as not enough samples.",
+        "",
+        "| Model | Score std dev | Stability |",
+        "| --- | ---: | --- |",
+    ]
+    for entry in entries:
+        lines.append(
+            f"| {_cell(entry['display_name'])} | "
+            f"{_number(entry['deterministic_scores']['standard_deviation'])} | "
+            f"{_cell(entry['stability_label'].replace('_', ' '))} |"
+        )
+    return [*lines, ""]
+
+
+def _correctness_consistency_section(entries: list[dict[str, Any]]) -> list[str]:
+    lines = [
+        "## Correctness Consistency",
+        "",
+        "Consistently correct requires every planned sample for the task to complete and pass "
+        "official correctness. Incomplete task coverage is always counted explicitly.",
+        "",
+        "| Model | Consistently correct | Sometimes correct | Never correct | "
+        "Incomplete coverage | No completed evaluation |",
+        "| --- | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for entry in entries:
+        consistency = entry["correctness_consistency"]
+        lines.append(
+            f"| {_cell(entry['display_name'])} | "
+            f"{consistency['tasks_consistently_correct']} | "
+            f"{consistency['tasks_sometimes_correct']} | "
+            f"{consistency['tasks_never_correct']} | "
+            f"{consistency['tasks_with_incomplete_coverage']} | "
+            f"{consistency['tasks_without_completed_evaluations']} |"
+        )
+    return [*lines, ""]
+
+
+def _variable_tasks_section(rows: list[dict[str, Any]]) -> list[str]:
+    variable = sorted(
+        (row for row in rows if row["score_standard_deviation"] is not None),
+        key=lambda row: (
+            -float(row["score_standard_deviation"]),
+            str(row["task_id"]),
+            str(row["model_configuration_fingerprint"]),
+        ),
+    )
+    lines = ["## Most Variable Tasks", ""]
+    if not variable:
+        return [*lines, "Not enough repeated completed samples to measure task variability.", ""]
+    lines.extend(
+        [
+            "| Rank | Model | Task | Completed / planned | Mean | Std dev |",
+            "| ---: | --- | --- | ---: | ---: | ---: |",
+        ]
+    )
+    for rank, row in enumerate(variable, 1):
+        lines.append(
+            f"| {rank} | {_cell(row['model'])} | {_cell(row['task_id'])} | "
+            f"{row['samples_completed']} / {row['samples_planned']} | "
+            f"{_number(row['mean_deterministic_score'])} | "
+            f"{_number(row['score_standard_deviation'])} |"
         )
     return [*lines, ""]
 
@@ -729,30 +932,31 @@ def _reliability_section(models: list[dict[str, Any]]) -> list[str]:
         )
         lines.append(
             f"| {_cell(model['display_name'])} | "
-            f"{_percent(generated / planned if planned else 0)} | "
-            f"{_percent(completed / generated if generated else 0)} | "
-            f"{_percent(model['correct_evaluations'] / completed if completed else None)} | "
-            f"{_percent(model['end_to_end_successful_samples'] / planned if planned else 0)} | "
-            f"{model['generation_failures']} | "
-            f"{failures.get('provider_refusal', 0)} | {failures.get('provider_timeout', 0)} | "
-            f"{failures.get('provider_rate_limited', 0)} | "
-            f"{malformed} | {failures.get('provider_unavailable', 0)} |"
+            f"{_count_rate(generated, planned)} | "
+            f"{_count_rate(completed, generated)} | "
+            f"{_count_rate(model['correct_evaluations'], completed, unknown_when_empty=True)} | "
+            f"{_count_rate(model['end_to_end_successful_samples'], planned)} | "
+            f"{_count_rate(model['generation_failures'], planned)} | "
+            f"{_count_rate(failures.get('provider_refusal', 0), planned)} | "
+            f"{_count_rate(failures.get('provider_timeout', 0), planned)} | "
+            f"{_count_rate(failures.get('provider_rate_limited', 0), planned)} | "
+            f"{_count_rate(malformed, planned)} | "
+            f"{_count_rate(failures.get('provider_unavailable', 0), planned)} |"
         )
     return [*lines, ""]
 
 
 def _cost_section(models: list[dict[str, Any]], evaluator: dict[str, Any]) -> list[str]:
     lines = [
-        "## Cost",
+        "## Cost Distribution",
         "",
         "All values below are actual recorded usage, not preflight estimates.",
         "",
-        "| Model | Input tokens | Output tokens | Generation cost | Cost coverage | "
-        "Cost / successful generation | Cost / correct evaluation |",
-        "| --- | ---: | ---: | --- | ---: | --- | --- |",
+        "| Model | Total cost | Mean / planned | Mean / generated | Median / generated | "
+        "Min / generated | Max / generated | Cost / correct | Cost coverage |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | ---: |",
     ]
     for model in models:
-        tokens = model["token_usage"]
         generated = model["successful_generations"]
         costs = model["actual_generation_costs"]
         cost_per_generation = _cost_metric(
@@ -763,13 +967,19 @@ def _cost_section(models: list[dict[str, Any]], evaluator: dict[str, Any]) -> li
             model["cost_per_correct_evaluation"],
             model["cost_per_correct_evaluation_status"],
         )
+        distributions = model["generation_cost_distributions"]
+        cost_per_planned = _cost_metric(
+            model["mean_cost_per_planned_sample"],
+            model["mean_cost_per_planned_sample_status"],
+        )
         lines.append(
             f"| {_cell(model['display_name'])} | "
-            f"{_known(tokens['input'], tokens['samples_with_usage'], generated)} | "
-            f"{_known(tokens['output'], tokens['samples_with_usage'], generated)} | "
             f"{_costs(costs, model['samples_with_cost'] / generated if generated else 0)} | "
-            f"{_percent(model['samples_with_cost'] / generated if generated else 0)} | "
-            f"{cost_per_generation} | {cost_per_correct} |"
+            f"{cost_per_planned} | "
+            f"{cost_per_generation} | {_cost_distribution_value(distributions, 'median')} | "
+            f"{_cost_distribution_value(distributions, 'minimum')} | "
+            f"{_cost_distribution_value(distributions, 'maximum')} | {cost_per_correct} | "
+            f"{_count_rate(model['samples_with_cost'], generated)} |"
         )
     if evaluator["ai_enabled"]:
         ai_cost = (
@@ -785,24 +995,34 @@ def _cost_section(models: list[dict[str, Any]], evaluator: dict[str, Any]) -> li
 
 def _latency_section(models: list[dict[str, Any]]) -> list[str]:
     lines = [
-        "## Latency",
+        "## Latency Distribution",
         "",
         "Provider generation latency, authoritative sandbox correctness-test execution, and "
         "benchmark evaluation lifecycle time are reported separately. Lifecycle time begins at "
         "sample creation and includes queueing and generation; it is not code execution time.",
         "",
-        "| Model | Generation median | Generation p95 | Test execution mean | Test execution p95 | "
-        "Evaluation lifecycle mean |",
-        "| --- | ---: | ---: | ---: | ---: | ---: |",
+        "| Model | Generation mean / median / p95 / min / max / std dev | "
+        "Test mean / median / p95 / min / max / std dev | "
+        "Evaluation lifecycle mean / std dev |",
+        "| --- | --- | --- | --- |",
     ]
     for model in models:
+        generation_distribution = _distribution_values(
+            model["generation_latency_distribution_ms"],
+            model["p95_generation_latency_ms"],
+            "ms",
+        )
+        test_distribution = _distribution_values(
+            model["test_execution_distribution_seconds"],
+            model["p95_test_execution_seconds"],
+            "s",
+        )
+        lifecycle_distribution = model["evaluation_lifecycle_distribution_seconds"]
         lines.append(
             f"| {_cell(model['display_name'])} | "
-            f"{_milliseconds(model['median_generation_latency_ms'])} | "
-            f"{_milliseconds(model['p95_generation_latency_ms'])} | "
-            f"{_seconds(model['mean_test_execution_seconds'])} | "
-            f"{_seconds(model['p95_test_execution_seconds'])} | "
-            f"{_seconds(model['mean_evaluation_lifecycle_seconds'])} |"
+            f"{generation_distribution} | {test_distribution} | "
+            f"{_number(lifecycle_distribution['mean'])} s / "
+            f"{_number(lifecycle_distribution['standard_deviation'])} s |"
         )
     return [*lines, ""]
 
@@ -985,6 +1205,42 @@ def _seconds(value: float | int | None) -> str:
 
 def _cell(value: object) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+def _confidence_interval(value: dict[str, Any] | None) -> str:
+    if value is None:
+        return "not enough samples"
+    return f"[{_number(value['lower'])}, {_number(value['upper'])}]"
+
+
+def _count_rate(numerator: int, denominator: int, *, unknown_when_empty: bool = False) -> str:
+    if denominator == 0 and unknown_when_empty:
+        return f"{numerator} / {denominator} (unknown)"
+    rate = numerator / denominator if denominator else 0
+    return f"{numerator} / {denominator} ({_percent(rate)})"
+
+
+def _cost_distribution_value(distributions: dict[str, Any], field: str) -> str:
+    if not distributions:
+        return "unknown"
+    return ", ".join(
+        f"{currency} {_number(summary[field])}"
+        for currency, summary in sorted(distributions.items())
+    )
+
+
+def _distribution_values(distribution: dict[str, Any], p95: Any, unit: str) -> str:
+    return " / ".join(
+        f"{_number(value)} {unit}"
+        for value in (
+            distribution["mean"],
+            distribution["median"],
+            p95,
+            distribution["minimum"],
+            distribution["maximum"],
+            distribution["standard_deviation"],
+        )
+    )
 
 
 def _costs(costs: dict[str, Any], coverage: float | int) -> str:

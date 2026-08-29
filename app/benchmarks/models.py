@@ -292,10 +292,43 @@ class MetricSummary(BaseModel):
     maximum: float | None = None
 
 
+class ConfidenceInterval95(BaseModel):
+    method: Literal["student_t_two_sided_95"] = "student_t_two_sided_95"
+    sample_count: int = Field(ge=2)
+    lower: float
+    upper: float
+
+
+class CorrectnessConsistencySummary(BaseModel):
+    tasks_consistently_correct: int = Field(ge=0)
+    tasks_sometimes_correct: int = Field(ge=0)
+    tasks_never_correct: int = Field(ge=0)
+    tasks_with_incomplete_coverage: int = Field(ge=0)
+    tasks_without_completed_evaluations: int = Field(ge=0)
+
+
+class ReliabilitySummary(BaseModel):
+    planned_samples: int = Field(ge=0)
+    successful_generations: int = Field(ge=0)
+    generation_failures: int = Field(ge=0)
+    completed_evaluations: int = Field(ge=0)
+    correct_evaluations: int = Field(ge=0)
+    end_to_end_successes: int = Field(ge=0)
+    provider_unavailable: int = Field(ge=0)
+    provider_timeouts: int = Field(ge=0)
+    provider_rate_limits: int = Field(ge=0)
+    provider_refusals: int = Field(ge=0)
+    malformed_responses: int = Field(ge=0)
+
+
 class PerTaskMetrics(BaseModel):
     task_id: str
     sample_count: int
+    planned_samples: int
+    completed_samples: int
+    coverage: float = Field(ge=0, le=1)
     generation_failures: int
+    generation_failure_rate: float = Field(ge=0, le=1)
     evaluation_failures: int
     scores: MetricSummary
     best_score: float | None = None
@@ -304,6 +337,14 @@ class PerTaskMetrics(BaseModel):
     correctness_pass_rate: float | None = Field(default=None, ge=0, le=1)
     end_to_end_success_rate: float = Field(ge=0, le=1)
     coverage_adjusted_deterministic_score: float | None = Field(default=None, ge=0, le=100)
+    correctness_consistency: Literal[
+        "consistently_correct",
+        "sometimes_correct",
+        "never_correct",
+        "incomplete_coverage",
+        "no_completed_evaluations",
+    ]
+    coverage_complete: bool
 
 
 class LeaderboardEntry(BaseModel):
@@ -315,6 +356,10 @@ class LeaderboardEntry(BaseModel):
     model_configuration_fingerprint: str
     weighted_mean_score: float | None = None
     deterministic_scores: MetricSummary
+    confidence_interval_95: ConfidenceInterval95 | None = None
+    stability_label: Literal["high", "moderate", "low", "not_enough_samples"]
+    correctness_consistency: CorrectnessConsistencySummary
+    reliability: ReliabilitySummary
     coverage: float = Field(ge=0, le=1)
     perfect_deterministic_score_rate: float | None = Field(default=None, ge=0, le=1)
     correctness_pass_rate: float | None = Field(default=None, ge=0, le=1)
@@ -333,10 +378,13 @@ class LeaderboardEntry(BaseModel):
     mean_generation_latency_ms: float | None = None
     median_generation_latency_ms: float | None = None
     p95_generation_latency_ms: float | None = None
+    generation_latency_distribution_ms: MetricSummary
     mean_test_execution_seconds: float | None = None
     median_test_execution_seconds: float | None = None
     p95_test_execution_seconds: float | None = None
+    test_execution_distribution_seconds: MetricSummary
     mean_evaluation_lifecycle_seconds: float | None = None
+    evaluation_lifecycle_distribution_seconds: MetricSummary
     per_task: list[PerTaskMetrics]
 
 

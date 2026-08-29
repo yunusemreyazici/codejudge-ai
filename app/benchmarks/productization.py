@@ -128,6 +128,7 @@ def render_run_show(artifacts: BenchmarkArtifacts) -> str:
         f"Created: {run['created_at']}",
         f"Completed at: {run['completed_at'] or 'unknown'}",
         f"Planned: {run['planned_sample_count']}",
+        f"Samples per task: {run['samples_per_task']}",
         f"Completed: {totals['completed_samples']}",
         f"Coverage: {_percent(_ratio(totals['completed_samples'], run['planned_sample_count']))}",
         f"Generation failures: {totals['generation_failures']}",
@@ -135,20 +136,25 @@ def render_run_show(artifacts: BenchmarkArtifacts) -> str:
         "Models: " + ", ".join(model["display_name"] for model in document["models"]),
         "",
         "Primary leaderboard",
-        "| Rank | Model | Mean | Coverage | Adjusted | Correctness | End-to-end | Cost | "
-        "Generation p50/p95 | Test mean/p95 |",
-        "| ---: | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |",
+        "| Rank | Model | Primary mean | Observed mean | 95% CI | Std dev | Coverage | "
+        "Adjusted | Correctness | End-to-end | Cost/planned | Generation p50/p95 | "
+        "Test mean/p95 |",
+        "| ---: | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |",
     ]
     models = {str(model["model_config_id"]): model for model in document["models"]}
     for entry in document["leaderboard"]:
         model = models[str(entry["model_config_id"])]
-        generation_cost = _currency_values(model["actual_generation_costs"])
         lines.append(
             f"| {entry['rank']} | {_cell(entry['display_name'])} | "
-            f"{_number(entry['weighted_mean_score'])} | {_percent(entry['coverage'])} | "
+            f"{_number(entry['weighted_mean_score'])} | "
+            f"{_number(model['deterministic_score_distribution']['mean'])} | "
+            f"{_interval(model['confidence_interval_95'])} | "
+            f"{_number(model['deterministic_score_distribution']['standard_deviation'])} | "
+            f"{_percent(entry['coverage'])} | "
             f"{_number(entry['coverage_adjusted_deterministic_score'])} | "
             f"{_percent(entry['correctness_pass_rate'])} | "
-            f"{_percent(entry['end_to_end_success_rate'])} | {generation_cost} | "
+            f"{_percent(entry['end_to_end_success_rate'])} | "
+            f"{_currency_values(model['mean_cost_per_planned_sample'] or {})} | "
             f"{_milliseconds(entry['median_generation_latency_ms'])} / "
             f"{_milliseconds(entry['p95_generation_latency_ms'])} | "
             f"{_seconds(entry['mean_test_execution_seconds'])} / "
@@ -258,9 +264,10 @@ def render_comparison_markdown(comparison: dict[str, Any]) -> str:
             "",
             "Rate deltas are percentage points (pp).",
             "",
-            "| Model | Deterministic mean | Coverage | Adjusted score | Correctness | "
+            "| Model | Deterministic mean | Std dev | 95% CI A → B | Coverage | "
+            "Adjusted score | Correctness | "
             "End-to-end | Generation success | Generation failures |",
-            "| --- | --- | --- | --- | --- | --- | --- | --- |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
     )
     for model in comparison["model_deltas"]:
@@ -268,6 +275,8 @@ def render_comparison_markdown(comparison: dict[str, Any]) -> str:
         lines.append(
             f"| {_identity_label(model['identity'])} | "
             f"{_score_transition(metrics['weighted_deterministic_mean'])} | "
+            f"{_score_transition(metrics['score_standard_deviation'])} | "
+            f"{_interval_transition(metrics['confidence_interval_95'])} | "
             f"{_rate_transition(metrics['coverage'])} | "
             f"{_score_transition(metrics['coverage_adjusted_deterministic_score'])} | "
             f"{_rate_transition(metrics['correctness_pass_rate'])} | "
@@ -280,20 +289,25 @@ def render_comparison_markdown(comparison: dict[str, Any]) -> str:
             "",
             "## Latency and cost deltas",
             "",
-            "| Model | Generation median | Generation p95 | Test mean | Test p95 | "
-            "Generation cost | Cost / generation | Cost / correct |",
-            "| --- | --- | --- | --- | --- | --- | --- | --- |",
+            "| Model | Generation mean | Generation median | Generation p95 | Generation std | "
+            "Test mean | Test p95 | Test std | Generation cost | Cost / planned | "
+            "Cost / generation | Cost / correct |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
     )
     for model in comparison["model_deltas"]:
         metrics = model["metrics"]
         lines.append(
             f"| {_identity_label(model['identity'])} | "
+            f"{_duration_transition(metrics['generation_mean_latency_ms'], 'ms')} | "
             f"{_duration_transition(metrics['generation_median_latency_ms'], 'ms')} | "
             f"{_duration_transition(metrics['generation_p95_latency_ms'], 'ms')} | "
+            f"{_duration_transition(metrics['generation_latency_standard_deviation_ms'], 'ms')} | "
             f"{_duration_transition(metrics['test_execution_mean_seconds'], 's')} | "
             f"{_duration_transition(metrics['test_execution_p95_seconds'], 's')} | "
+            f"{_duration_transition(metrics['test_execution_standard_deviation_seconds'], 's')} | "
             f"{_currency_transition(metrics['generation_cost'])} | "
+            f"{_currency_transition(metrics['mean_cost_per_planned_sample'])} | "
             f"{_currency_transition(metrics['cost_per_successful_generation'])} | "
             f"{_currency_transition(metrics['cost_per_correct_evaluation'])} |"
         )
@@ -522,7 +536,10 @@ def _compatibility(
         if value_a != value_b:
             blockers.append(f"Runs use incompatible {label}.")
     if document_a["run"]["samples_per_task"] != document_b["run"]["samples_per_task"]:
-        warnings.append("Runs use different samples-per-task counts.")
+        warnings.append(
+            "Runs use different samples-per-task; uncertainty estimates are not directly "
+            "equivalent."
+        )
     if document_a["evaluator"]["fingerprint"] != document_b["evaluator"][
         "fingerprint"
     ] and _evaluator_semantics(document_a) == _evaluator_semantics(document_b):
@@ -591,6 +608,14 @@ def _model_metric_deltas(
         "weighted_deterministic_mean": _numeric_delta(
             entry_a["weighted_mean_score"], entry_b["weighted_mean_score"]
         ),
+        "score_standard_deviation": _numeric_delta(
+            model_a["deterministic_score_distribution"]["standard_deviation"],
+            model_b["deterministic_score_distribution"]["standard_deviation"],
+        ),
+        "confidence_interval_95": {
+            "a": model_a["confidence_interval_95"],
+            "b": model_b["confidence_interval_95"],
+        },
         "coverage": _rate_delta(entry_a["coverage"], entry_b["coverage"]),
         "coverage_adjusted_deterministic_score": _numeric_delta(
             entry_a["coverage_adjusted_deterministic_score"],
@@ -612,6 +637,14 @@ def _model_metric_deltas(
             entry_a["median_generation_latency_ms"],
             entry_b["median_generation_latency_ms"],
         ),
+        "generation_mean_latency_ms": _numeric_delta(
+            model_a["generation_latency_distribution_ms"]["mean"],
+            model_b["generation_latency_distribution_ms"]["mean"],
+        ),
+        "generation_latency_standard_deviation_ms": _numeric_delta(
+            model_a["generation_latency_distribution_ms"]["standard_deviation"],
+            model_b["generation_latency_distribution_ms"]["standard_deviation"],
+        ),
         "generation_p95_latency_ms": _numeric_delta(
             entry_a["p95_generation_latency_ms"], entry_b["p95_generation_latency_ms"]
         ),
@@ -621,12 +654,20 @@ def _model_metric_deltas(
         "test_execution_p95_seconds": _numeric_delta(
             entry_a["p95_test_execution_seconds"], entry_b["p95_test_execution_seconds"]
         ),
+        "test_execution_standard_deviation_seconds": _numeric_delta(
+            model_a["test_execution_distribution_seconds"]["standard_deviation"],
+            model_b["test_execution_distribution_seconds"]["standard_deviation"],
+        ),
         "generation_cost": _currency_delta(
             model_a["actual_generation_costs"], model_b["actual_generation_costs"]
         ),
         "cost_per_successful_generation": _currency_delta(
             model_a["cost_per_successful_generation"],
             model_b["cost_per_successful_generation"],
+        ),
+        "mean_cost_per_planned_sample": _currency_delta(
+            model_a["mean_cost_per_planned_sample"],
+            model_b["mean_cost_per_planned_sample"],
         ),
         "cost_per_correct_evaluation": _currency_delta(
             model_a["cost_per_correct_evaluation"], model_b["cost_per_correct_evaluation"]
@@ -1007,6 +1048,16 @@ def _cell(value: Any) -> str:
 
 def _identity_label(identity: Mapping[str, Any]) -> str:
     return _cell(f"{identity['provider_id']}/{identity['model']}")
+
+
+def _interval(value: Mapping[str, Any] | None) -> str:
+    if value is None:
+        return "not enough samples"
+    return f"[{_number(value['lower'])}, {_number(value['upper'])}]"
+
+
+def _interval_transition(metric: Mapping[str, Any]) -> str:
+    return f"{_interval(metric['a'])} → {_interval(metric['b'])}"
 
 
 def _score_transition(metric: Mapping[str, Any]) -> str:

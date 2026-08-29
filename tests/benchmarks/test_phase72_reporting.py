@@ -234,6 +234,21 @@ async def test_export_is_deterministic_auditable_and_report_is_structural(tmp_pa
     assert first.document["models"][0]["cost_per_correct_evaluation"] == {
         "USD": Decimal("0.000180000000")
     }
+    assert (
+        first.document["models"][0]["deterministic_score_distribution"]["standard_deviation"]
+        is None
+    )
+    assert first.document["models"][0]["confidence_interval_95"] is None
+    assert first.document["models"][0]["stability_label"] == "not_enough_samples"
+    assert first.document["models"][0]["generation_cost_distributions"]["USD"] == {
+        "count": 1,
+        "mean": 0.00018,
+        "median": 0.00018,
+        "standard_deviation": None,
+        "minimum": 0.00018,
+        "maximum": 0.00018,
+    }
+    assert first.document["per_task"][0]["score_standard_deviation"] is None
     assert "These results apply to the exact dataset" in report
     assert "unknown" in report
     assert "Failures & Refusals" in report
@@ -245,6 +260,13 @@ async def test_export_is_deterministic_auditable_and_report_is_structural(tmp_pa
     assert "Evaluation lifecycle mean" in report
     assert "provider_refusal" in report
     assert "mixes generation output modes" in report
+    assert "Repeated-Sample Statistics" in report
+    assert "Stability" in report
+    assert "Correctness Consistency" in report
+    assert "Most Variable Tasks" in report
+    assert "Cost Distribution" in report
+    assert "Latency Distribution" in report
+    assert "not enough samples" in report
 
     output = tmp_path / "run" / "results.json"
     write_export(first, output)

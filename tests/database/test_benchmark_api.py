@@ -96,6 +96,9 @@ async def test_benchmark_api_plans_lists_details_leaderboard_and_compares(
     assert fetched.status_code == 200
     assert fetched.json()["planned_samples"] == 4
     assert len(samples.json()) == 2
+    assert [sample["sample_index"] for sample in samples.json()] == [1, 2]
+    assert len({sample["benchmark_sample_id"] for sample in samples.json()}) == 2
+    assert {sample["task_id"] for sample in samples.json()} == {"lru-cache"}
     assert detail.status_code == 200
     assert "source" not in detail.json()
     assert len(leaderboard.json()) == 2

@@ -13,6 +13,7 @@ from app.benchmarks.run_config import (
 )
 
 EXAMPLE = Path("benchmark-configs/real-smoke.example.yaml")
+REPEATED_EXAMPLE = Path("benchmark-configs/repeated-example.yaml")
 
 
 def test_example_config_plans_fourteen_generations_without_provider_calls() -> None:
@@ -55,6 +56,44 @@ def test_known_estimate_over_budget_refuses_before_run() -> None:
 
     with pytest.raises(BenchmarkConfigError, match="exceeds budget"):
         build_plan(config.model_copy(update={"max_generation_cost": budget}), environment={})
+
+
+def test_three_repeated_samples_plan_42_generations_and_multiply_budget_estimates() -> None:
+    single = load_benchmark_config(EXAMPLE)
+    repeated = single.model_copy(update={"samples_per_task": 3})
+    single_plan = build_plan(single, environment={})
+    repeated_plan = build_plan(repeated, environment={})
+
+    assert repeated_plan.model_count == 2
+    assert repeated_plan.task_count == 7
+    assert repeated_plan.samples_per_task == 3
+    assert repeated_plan.planned_generations == 42
+    assert [model.planned_generations for model in repeated_plan.models] == [21, 21]
+    assert repeated_plan.estimated_maximum_costs == {
+        currency: amount * 3 for currency, amount in single_plan.estimated_maximum_costs.items()
+    }
+    for repeated_model, single_model in zip(repeated_plan.models, single_plan.models, strict=True):
+        assert repeated_model.estimated_maximum_cost == single_model.estimated_maximum_cost * 3  # type: ignore[operator]
+
+    assert repeated.max_generation_cost is not None
+    refused_budget = repeated.max_generation_cost.model_copy(
+        update={"amount": single_plan.estimated_maximum_costs["USD"]}
+    )
+    with pytest.raises(BenchmarkConfigError, match="exceeds budget"):
+        build_plan(
+            repeated.model_copy(update={"max_generation_cost": refused_budget}), environment={}
+        )
+
+
+def test_repeated_example_is_provider_free_and_plans_42_generations() -> None:
+    config = load_benchmark_config(REPEATED_EXAMPLE)
+
+    plan = build_plan(config, environment={})
+
+    assert config.samples_per_task == 3
+    assert plan.planned_generations == 42
+    assert all(not model.credential_configured for model in plan.models)
+    assert all(not model.endpoint_configured for model in plan.models)
 
 
 def test_run_preflight_requires_credentials_and_matching_ai_policy() -> None:

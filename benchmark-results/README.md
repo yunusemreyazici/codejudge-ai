@@ -47,6 +47,18 @@ Reports keep provider generation latency, sandbox correctness-test execution, an
 sample-to-snapshot lifecycle separate. Cost-per-success is unknown or not applicable when its
 denominator is zero or cost coverage is incomplete—never zero by assumption.
 
+Repeated runs retain every independently identified model/task/sample-index observation. Primary
+quality is calculated task-first: completed repeats are averaged within a task, then each dataset
+task weight is applied once. Missing repeats affect only coverage and the supplemental
+coverage-adjusted score. Score and latency deviations use sample standard deviation (`n-1`), and
+the 95% mean interval uses Student's t distribution; both are unknown when fewer than two relevant
+observations exist. Model repeat uncertainty also stays unknown for one-sample-per-task runs,
+because cross-task variation is not repeat stability. These descriptive intervals characterize the
+archived observations, not future provider behavior. Cost distributions are available only with
+complete persisted cost coverage.
+Comparing otherwise compatible runs with different samples per task is allowed with an explicit
+warning that their uncertainty estimates are not directly equivalent.
+
 ## Browse and compare persisted runs
 
 These commands require the application `DATABASE_URL`, but no provider credentials, Redis, or

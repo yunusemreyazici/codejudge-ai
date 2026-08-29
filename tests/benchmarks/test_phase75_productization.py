@@ -199,6 +199,23 @@ async def test_comparison_outputs_are_deterministic_and_extension_driven(tmp_pat
         write_comparison(first, tmp_path / "comparison.txt")
 
 
+async def test_comparison_allows_different_sample_counts_with_exact_uncertainty_warning() -> None:
+    run_a = await _artifacts()
+    run_b = _copy_artifacts(
+        run_a,
+        mutate=lambda document: document["run"].__setitem__("samples_per_task", 3),
+    )
+
+    comparison = build_comparison(run_a, run_b)
+
+    assert comparison["compatibility"]["status"] == "compatible_with_warnings"
+    assert comparison["compatibility"]["blockers"] == []
+    assert (
+        "Runs use different samples-per-task; uncertainty estimates are not directly equivalent."
+        in comparison["compatibility"]["warnings"]
+    )
+
+
 async def test_archive_is_deterministic_secret_free_and_verifiable(tmp_path: Path) -> None:
     artifacts = await _artifacts()
     first_path = tmp_path / "first"
@@ -228,6 +245,54 @@ async def test_archive_is_deterministic_secret_free_and_verifiable(tmp_path: Pat
     assert b"Authorization: Bearer" not in all_content
     with pytest.raises(BenchmarkProductError, match="not empty"):
         write_archive(artifacts, first_path)
+
+
+async def test_archive_preserves_repeated_sample_indices_and_candidates(tmp_path: Path) -> None:
+    original = await _artifacts()
+    document = copy.deepcopy(original.document)
+    source_sample = next(sample for sample in document["samples"] if sample["generation"])
+    repeated_sample = copy.deepcopy(source_sample)
+    repeated_id = str(uuid4())
+    repeated_sample["benchmark_sample_id"] = repeated_id
+    repeated_sample["sample_index"] = 2
+    repeated_sample["generation"]["candidate_path"] = f"candidates/{repeated_id}.py"
+    document["samples"].append(repeated_sample)
+    document["samples"].sort(
+        key=lambda sample: (
+            str(sample["model_config_id"]),
+            sample["task_id"],
+            sample["sample_index"],
+        )
+    )
+    document["run"]["samples_per_task"] = 2
+    document["run"]["planned_sample_count"] += 1
+    candidates = dict(original.candidates)
+    original_candidate = next(iter(original.candidates.values()))
+    candidates[f"{repeated_id}.py"] = original_candidate
+    results_bytes = canonical_json_bytes(document)
+    repeated = BenchmarkArtifacts(
+        document=document,
+        results_bytes=results_bytes,
+        results_sha256=hashlib.sha256(results_bytes).hexdigest(),
+        candidates=candidates,
+    )
+
+    archive = tmp_path / "repeated"
+    manifest = write_archive(repeated, archive, created_at=FIXED_ARCHIVE_TIME)
+    verified = verify_archive(archive)
+    archived_document = json.loads((archive / "results.json").read_text(encoding="utf-8"))
+
+    assert verified == manifest
+    archived_pair = [
+        sample
+        for sample in archived_document["samples"]
+        if sample["task_id"] == source_sample["task_id"]
+        and str(sample["model_config_id"]) == str(source_sample["model_config_id"])
+    ]
+    assert [sample["sample_index"] for sample in archived_pair] == [1, 2]
+    assert {sample["generation"]["candidate_path"] for sample in archived_pair} <= set(
+        manifest["candidate_sha256"]
+    )
 
 
 async def test_archive_tamper_and_candidate_integrity_fail_precisely(tmp_path: Path) -> None:

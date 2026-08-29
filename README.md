@@ -628,6 +628,12 @@ bound plus each model's configured maximum output tokens:
 uv run codejudge-benchmark plan benchmark-configs/real-smoke.yaml
 ```
 
+For statistically useful repetition, start from
+[`benchmark-configs/repeated-example.yaml`](benchmark-configs/repeated-example.yaml). Its two models,
+seven tasks, and three independent samples per task plan 42 generations. The plan and noninteractive
+`run` preflight show samples per task, total generations, and total/per-model maximum estimates
+before anything is queued; the configured hard budget remains the execution boundary.
+
 Unknown pricing is displayed as `unknown`, never zero. A configured USD budget is rejected if the
 known maximum estimate exceeds it, if any model price is unknown, or if another currency would
 require conversion. The estimate is not actual spend. Actual provider-reported tokens and cost
@@ -694,6 +700,18 @@ benchmark-policy, scoring, or evaluator semantics produce no metric deltas and a
 `archive` writes only a local `benchmark-results/runs/<RUN_ID>/` bundle and refuses to overwrite a
 nonempty directory. It never registers an archive in PostgreSQL or publishes anything.
 
+Phase 7.6 adds repeated-sample statistics without changing primary ranking. Completed scores are
+averaged inside each model/task pair first, then the dataset task weight is applied exactly once,
+so uneven completion cannot give one task extra weight. Missing planned repeats contribute zero
+only to the supplemental coverage-adjusted score. Distribution standard deviations use the sample
+convention (`n-1`); values with fewer than two observations have unknown deviation and confidence
+interval. A one-sample-per-task run also leaves model repeated-sample deviation and confidence
+unknown: variation between different tasks is not mislabeled as repeat stability. The reported 95%
+interval is a deterministic two-sided Student-t interval for the observed arithmetic mean and does
+not claim uncertainty about future provider behavior. Stability is supplemental: `high` for score
+deviation at most 5, `moderate` above 5 through 15, and `low` above 15; insufficient repetition is
+`not enough samples`.
+
 Normal output under `benchmark-results/generated/` is Git-ignored. CodeJudge never calls providers
 during tests or CI, never publishes or commits results, and never updates this README with a result.
 See [`benchmark-results/README.md`](benchmark-results/README.md) for the human-review convention.
@@ -726,6 +744,8 @@ handling, Docker daemon boundary, and remaining risks.
   coverage-adjusted, lifecycle, execution-time, and per-success cost semantics
 - **Phase 7.5 — Benchmark result productization (implemented):** provider-free historical browsing,
   compatible run diffs, portable archives, and offline integrity verification
+- **Phase 7.6 — Repeated-sample statistics and stability (implemented):** task-first aggregation,
+  Student-t uncertainty, consistency, distributions, and repeated-sample archive provenance
 - **Phase 8 — Observability + production hardening (planned):** tracing, metrics, and operations
 
 ## Development

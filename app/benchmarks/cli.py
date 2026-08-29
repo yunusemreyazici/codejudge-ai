@@ -524,6 +524,15 @@ def _print_plan(plan: BenchmarkPlan) -> None:
             "provider concurrency "
             f"{model.max_concurrent_requests or 'unlimited'}"
         )
+        estimate = (
+            "unknown"
+            if model.estimated_maximum_cost is None or model.currency is None
+            else f"{model.currency} {model.estimated_maximum_cost}"
+        )
+        print(
+            f"Estimated maximum ({model.provider_id}/{model.model}, "
+            f"{model.planned_generations} generations): {estimate}"
+        )
     print(
         f"Known pricing: {plan.model_count - len(plan.unknown_pricing)}/{plan.model_count} models"
     )
