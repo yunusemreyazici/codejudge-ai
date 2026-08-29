@@ -268,6 +268,37 @@ async def test_nonretryable_400_is_sanitized() -> None:
     await client.aclose()
 
 
+@pytest.mark.parametrize(
+    ("status", "expected_code"),
+    [
+        (401, "provider_unauthorized"),
+        (403, "provider_forbidden"),
+        (404, "provider_not_found"),
+        (429, "provider_rate_limited"),
+    ],
+)
+async def test_http_status_has_structured_generation_failure_code(
+    status: int, expected_code: str
+) -> None:
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: _response(status)))
+    provider = OpenAICompatibleProvider(
+        base_url="https://provider.invalid/v1",
+        api_key="must-not-leak",
+        timeout_seconds=1,
+        max_attempts=1,
+        max_response_bytes=4096,
+        client=client,
+    )
+
+    with pytest.raises(ProviderError) as captured:
+        await provider.complete_structured(_request())
+
+    assert captured.value.code == expected_code
+    assert captured.value.http_status == status
+    assert "must-not-leak" not in str(captured.value)
+    await client.aclose()
+
+
 async def test_timeout_is_sanitized_and_bounded() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("raw provider detail", request=request)

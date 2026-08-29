@@ -106,6 +106,35 @@ async def test_engine_integrates_analysis_without_changing_correctness() -> None
     )
 
 
+async def test_zero_test_runner_result_can_be_completed_but_has_no_correctness_credit() -> None:
+    runner = FakeRunner(
+        RunnerResult(
+            exit_code=1,
+            stdout="",
+            stderr="",
+            duration_seconds=0.01,
+            passed=0,
+            failed=0,
+            total=0,
+        )
+    )
+    engine = EvaluationEngine(
+        TaskRegistry.default(),
+        {"python": runner},
+        max_code_size=1000,
+        analysis_engine=FakeAnalysisEngine(_perfect_analysis()),
+    )
+
+    result = await engine.evaluate(
+        EvaluationRequest(task_id="lru-cache", language="python", code="invalid candidate")
+    )
+
+    assert result.status is EvaluationStatus.COMPLETED
+    assert result.tests.total == 0
+    assert result.score_breakdown.correctness == 0
+    assert result.score == 40
+
+
 async def test_engine_rejects_unknown_task() -> None:
     engine = EvaluationEngine(TaskRegistry.default(), {}, max_code_size=1000)
 

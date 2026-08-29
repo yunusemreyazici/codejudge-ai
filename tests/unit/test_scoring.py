@@ -58,6 +58,13 @@ def test_weighted_score_keeps_correctness_at_60_percent() -> None:
     assert calculate_final_score(breakdown) == 70
 
 
+def test_zero_executed_tests_have_zero_deterministic_correctness() -> None:
+    breakdown = calculate_score(_tests(passed=0, total=0), _analysis())
+
+    assert breakdown.correctness == 0
+    assert calculate_final_score(breakdown) == 40
+
+
 def test_quality_and_type_penalties_are_deterministic() -> None:
     findings = [
         Finding(

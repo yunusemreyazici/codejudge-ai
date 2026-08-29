@@ -52,6 +52,10 @@ class GenerationFailureCode(StrEnum):
     PROVIDER_TIMEOUT = "provider_timeout"
     PROVIDER_UNAVAILABLE = "provider_unavailable"
     PROVIDER_RATE_LIMITED = "provider_rate_limited"
+    PROVIDER_UNAUTHORIZED = "provider_unauthorized"
+    PROVIDER_FORBIDDEN = "provider_forbidden"
+    PROVIDER_NOT_FOUND = "provider_not_found"
+    PROVIDER_ERROR = "provider_error"
     PROVIDER_REFUSAL = "provider_refusal"
     MALFORMED_OUTPUT = "malformed_output"
     MALFORMED_PROVIDER_RESPONSE = "malformed_provider_response"
@@ -307,6 +311,14 @@ class CorrectnessConsistencySummary(BaseModel):
     tasks_without_completed_evaluations: int = Field(ge=0)
 
 
+class GenerationReliabilitySummary(BaseModel):
+    planned_generations: int = Field(ge=0)
+    successful_generations: int = Field(ge=0)
+    generation_failures: int = Field(ge=0)
+    generation_success_rate: float = Field(ge=0, le=1)
+    failure_categories: dict[str, int]
+
+
 class ReliabilitySummary(BaseModel):
     planned_samples: int = Field(ge=0)
     successful_generations: int = Field(ge=0)
@@ -319,6 +331,7 @@ class ReliabilitySummary(BaseModel):
     provider_rate_limits: int = Field(ge=0)
     provider_refusals: int = Field(ge=0)
     malformed_responses: int = Field(ge=0)
+    generation: GenerationReliabilitySummary
 
 
 class PerTaskMetrics(BaseModel):

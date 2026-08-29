@@ -23,8 +23,12 @@ from app.benchmarks.models import (
     BenchmarkSampleStatus,
 )
 from app.benchmarks.prompts import CODING_PROMPT_HASH
+from app.benchmarks.reliability import (
+    GENERATION_FAILURE_CATEGORY_ORDER,
+    generation_failure_category_counts,
+)
 from app.benchmarks.repositories import BenchmarkRepository, BenchmarkResultRow
-from app.benchmarks.statistics import build_leaderboard, metric_summary
+from app.benchmarks.statistics import build_leaderboard, is_correct_evaluation, metric_summary
 from app.db.repositories import EvaluationRepository
 from app.snapshots.fingerprints import source_identity
 from app.snapshots.models import EvaluationSnapshot
@@ -156,12 +160,12 @@ class BenchmarkExporter:
                     "Completed evaluations divided by successful generations."
                 ),
                 "correctness_pass_rate": (
-                    "Completed evaluations with zero failed official correctness tests divided "
-                    "by completed evaluations."
+                    "Completed evaluations where the complete expected official test suite ran "
+                    "and every official test passed divided by completed evaluations."
                 ),
                 "end_to_end_success_rate": (
-                    "Samples with a persisted generation, completed evaluation, and zero failed "
-                    "official correctness tests divided by all planned samples."
+                    "Samples with a persisted generation, completed evaluation, and a complete "
+                    "all-passing expected official test suite divided by all planned samples."
                 ),
                 "perfect_deterministic_score_rate": (
                     "Completed evaluations with total deterministic score exactly 100 divided "
@@ -340,6 +344,7 @@ def render_report(artifacts: BenchmarkArtifacts) -> str:
         lines.extend(_stability_section(leaderboard))
         lines.extend(_correctness_consistency_section(leaderboard))
         lines.extend(_variable_tasks_section(document["per_task"]))
+    lines.extend(_generation_reliability_section(models))
     lines.extend(_reliability_section(models))
     lines.extend(_cost_section(models, document["evaluator"]))
     lines.extend(_latency_section(models))
@@ -448,7 +453,7 @@ def _model_document(
     selected = [row for row in rows if row.config.model_config_id == config.model_config_id]
     generated = [row for row in selected if row.artifact is not None]
     evaluated = [row for row in selected if row.deterministic_score is not None]
-    correct = [row for row in evaluated if row.tests_failed == 0]
+    correct = [row for row in evaluated if is_correct_evaluation(row)]
     end_to_end_successes = [row for row in correct if row.artifact is not None]
     failures: dict[str, int] = {}
     for row in selected:
@@ -530,6 +535,18 @@ def _model_document(
     )
     score_interval = None if leaderboard_entry is None else leaderboard_entry.confidence_interval_95
     pricing = None if config.pricing is None else config.pricing.model_dump(mode="json")
+    generation_failures = [
+        row for row in selected if row.sample.status is BenchmarkSampleStatus.GENERATION_FAILED
+    ]
+    generation_reliability = {
+        "planned_generations": len(selected),
+        "successful_generations": len(generated),
+        "generation_failures": len(generation_failures),
+        "generation_success_rate": len(generated) / len(selected) if selected else 0,
+        "failure_categories": generation_failure_category_counts(
+            row.sample.failure_code for row in generation_failures
+        ),
+    }
     return {
         "model_config_id": config.model_config_id,
         "provider_id": config.provider_id,
@@ -558,6 +575,7 @@ def _model_document(
             row.sample.status is BenchmarkSampleStatus.EVALUATION_FAILED for row in selected
         ),
         "failure_codes": dict(sorted(failures.items())),
+        "generation_reliability": generation_reliability,
         "token_usage": tokens,
         "actual_generation_costs": dict(sorted(costs.items())),
         "generation_cost_distributions": cost_distributions,
@@ -946,6 +964,30 @@ def _reliability_section(models: list[dict[str, Any]]) -> list[str]:
     return [*lines, ""]
 
 
+def _generation_reliability_section(models: list[dict[str, Any]]) -> list[str]:
+    lines = [
+        "## Generation Reliability",
+        "",
+        "Generation outcomes use persisted artifacts and explicit generation-failure states; "
+        "they are not inferred from evaluation coverage. Categories are normalized from "
+        "sanitized typed failure codes.",
+        "",
+        "| Model | Planned | Generated | Success rate | Failures | Failure breakdown |",
+        "| --- | ---: | ---: | ---: | ---: | --- |",
+    ]
+    for model in models:
+        reliability = _generation_reliability(model)
+        lines.append(
+            f"| {_cell(model['display_name'])} | "
+            f"{reliability['planned_generations']} | "
+            f"{reliability['successful_generations']} | "
+            f"{_percent(reliability['generation_success_rate'])} | "
+            f"{reliability['generation_failures']} | "
+            f"{_failure_breakdown(reliability['failure_categories'])} |"
+        )
+    return [*lines, ""]
+
+
 def _cost_section(models: list[dict[str, Any]], evaluator: dict[str, Any]) -> list[str]:
     lines = [
         "## Cost Distribution",
@@ -1205,6 +1247,44 @@ def _seconds(value: float | int | None) -> str:
 
 def _cell(value: object) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+def _failure_breakdown(categories: dict[str, int]) -> str:
+    if not categories:
+        return "none"
+    return ", ".join(f"{_cell(category)}={count}" for category, count in categories.items())
+
+
+def _generation_reliability(model: dict[str, Any]) -> dict[str, Any]:
+    explicit = model.get("generation_reliability")
+    if isinstance(explicit, dict):
+        return explicit
+    planned = int(model.get("planned_samples", 0))
+    generated = int(model.get("successful_generations", 0))
+    failures = int(model.get("generation_failures", 0))
+    raw_counts = model.get("failure_codes")
+    normalized: dict[str, int] = {}
+    if isinstance(raw_counts, dict):
+        expanded = (
+            str(code) for code, count in raw_counts.items() for _ in range(max(0, int(count)))
+        )
+        normalized = generation_failure_category_counts(expanded)
+        normalized.pop("unknown", None)
+    known = sum(normalized.values())
+    if failures > known:
+        normalized["unknown"] = failures - known
+    ordered = {
+        category: normalized[category]
+        for category in GENERATION_FAILURE_CATEGORY_ORDER
+        if normalized.get(category, 0) > 0
+    }
+    return {
+        "planned_generations": planned,
+        "successful_generations": generated,
+        "generation_failures": failures,
+        "generation_success_rate": generated / planned if planned else 0,
+        "failure_categories": ordered,
+    }
 
 
 def _confidence_interval(value: dict[str, Any] | None) -> str:

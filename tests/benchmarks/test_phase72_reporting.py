@@ -215,6 +215,20 @@ async def test_export_is_deterministic_auditable_and_report_is_structural(tmp_pa
     assert first.document["models"][0]["model_configuration_fingerprint"]
     assert first.document["totals"]["provider_refusals"] == 1
     assert first.document["models"][1]["actual_generation_costs"] == {}
+    assert first.document["models"][0]["generation_reliability"] == {
+        "planned_generations": 1,
+        "successful_generations": 1,
+        "generation_failures": 0,
+        "generation_success_rate": 1,
+        "failure_categories": {},
+    }
+    assert first.document["models"][1]["generation_reliability"] == {
+        "planned_generations": 1,
+        "successful_generations": 0,
+        "generation_failures": 1,
+        "generation_success_rate": 0,
+        "failure_categories": {"provider_error": 1},
+    }
     assert first.document["models"][1]["generation_parameters"]["output_mode"] == "raw_source"
     assert first.document["evaluator"]["ai_cost"]["status"] == "not_applicable"
     assert first.document["samples"][0]["evaluation"]["score_breakdown"]["correctness"] == 75
@@ -266,6 +280,8 @@ async def test_export_is_deterministic_auditable_and_report_is_structural(tmp_pa
     assert "Most Variable Tasks" in report
     assert "Cost Distribution" in report
     assert "Latency Distribution" in report
+    assert "Generation Reliability" in report
+    assert "provider_error=1" in report
     assert "not enough samples" in report
 
     output = tmp_path / "run" / "results.json"

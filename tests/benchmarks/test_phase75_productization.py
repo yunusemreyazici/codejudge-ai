@@ -99,6 +99,9 @@ async def test_run_listing_and_show_reuse_persisted_metrics() -> None:
     assert "End-to-end" in shown
     assert "Generation p50/p95" in shown
     assert "Test mean/p95" in shown
+    assert "Generation reliability" in shown
+    assert "Failure breakdown" in shown
+    assert "provider_error=1" in shown
     assert "USD" in shown
     assert parse_dataset_selector("codejudge-core@2") == ("codejudge-core", "2")
     with pytest.raises(BenchmarkProductError, match="form"):
@@ -205,7 +208,6 @@ async def test_comparison_allows_different_sample_counts_with_exact_uncertainty_
         run_a,
         mutate=lambda document: document["run"].__setitem__("samples_per_task", 3),
     )
-
     comparison = build_comparison(run_a, run_b)
 
     assert comparison["compatibility"]["status"] == "compatible_with_warnings"
@@ -214,6 +216,47 @@ async def test_comparison_allows_different_sample_counts_with_exact_uncertainty_
         "Runs use different samples-per-task; uncertainty estimates are not directly equivalent."
         in comparison["compatibility"]["warnings"]
     )
+
+
+async def test_comparison_reports_generation_failure_count_and_normalized_category_changes() -> (
+    None
+):
+    run_a = await _artifacts()
+
+    def mutate(document: dict[str, Any]) -> None:
+        refusal = next(model for model in document["models"] if model["model"] == "refusal")
+        refusal["generation_reliability"]["failure_categories"] = {"rate_limited": 1}
+
+    comparison = build_comparison(run_a, _copy_artifacts(run_a, mutate=mutate))
+    refusal_delta = next(
+        delta for delta in comparison["model_deltas"] if delta["identity"]["model"] == "refusal"
+    )
+    metrics = refusal_delta["metrics"]
+
+    assert metrics["generation_failure_count"] == {"a": 1, "b": 1, "delta": 0}
+    assert metrics["generation_failure_category_changes"] == [
+        {"category": "rate_limited", "a": 0, "b": 1, "delta": 1},
+        {"category": "provider_error", "a": 1, "b": 0, "delta": -1},
+    ]
+    markdown = render_comparison_markdown(comparison)
+    assert "rate_limited: 0 → 1" in markdown
+    assert "provider_error: 1 → 0" in markdown
+
+
+async def test_historical_export_without_normalized_reliability_remains_readable() -> None:
+    current = await _artifacts()
+
+    def remove_additive_field(document: dict[str, Any]) -> None:
+        for model in document["models"]:
+            model.pop("generation_reliability", None)
+
+    historical = _copy_artifacts(current, mutate=remove_additive_field)
+    shown = render_run_show(historical)
+    comparison = build_comparison(historical, current)
+
+    assert "provider_error=1" in shown
+    assert comparison["compatibility"]["blockers"] == []
+    assert comparison["model_deltas"]
 
 
 async def test_archive_is_deterministic_secret_free_and_verifiable(tmp_path: Path) -> None:

@@ -18,6 +18,10 @@ from app.benchmarks.exporting import (
     write_export,
 )
 from app.benchmarks.models import BenchmarkRunStatus, BenchmarkSampleStatus
+from app.benchmarks.reliability import (
+    GENERATION_FAILURE_CATEGORY_ORDER,
+    generation_failure_category_counts,
+)
 from app.benchmarks.repositories import BenchmarkRepository
 from app.benchmarks.statistics import build_leaderboard
 from app.core.version import codejudge_version
@@ -160,6 +164,24 @@ def render_run_show(artifacts: BenchmarkArtifacts) -> str:
             f"{_seconds(entry['mean_test_execution_seconds'])} / "
             f"{_seconds(entry['p95_test_execution_seconds'])} |"
         )
+    lines.extend(
+        [
+            "",
+            "Generation reliability",
+            "| Model | Planned | Generated | Success rate | Failures | Failure breakdown |",
+            "| --- | ---: | ---: | ---: | ---: | --- |",
+        ]
+    )
+    for model in document["models"]:
+        reliability = _generation_reliability(model)
+        lines.append(
+            f"| {_cell(model['display_name'])} | "
+            f"{reliability['planned_generations']} | "
+            f"{reliability['successful_generations']} | "
+            f"{_percent(reliability['generation_success_rate'])} | "
+            f"{reliability['generation_failures']} | "
+            f"{_failure_breakdown(reliability['failure_categories'])} |"
+        )
     return "\n".join(lines)
 
 
@@ -266,8 +288,8 @@ def render_comparison_markdown(comparison: dict[str, Any]) -> str:
             "",
             "| Model | Deterministic mean | Std dev | 95% CI A → B | Coverage | "
             "Adjusted score | Correctness | "
-            "End-to-end | Generation success | Generation failures |",
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+            "End-to-end | Generation success | Failure count | Failure-category changes |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
     )
     for model in comparison["model_deltas"]:
@@ -282,7 +304,8 @@ def render_comparison_markdown(comparison: dict[str, Any]) -> str:
             f"{_rate_transition(metrics['correctness_pass_rate'])} | "
             f"{_rate_transition(metrics['end_to_end_success_rate'])} | "
             f"{_rate_transition(metrics['successful_generation_rate'])} | "
-            f"{_rate_transition(metrics['generation_failure_rate'])} |"
+            f"{_score_transition(metrics['generation_failure_count'])} | "
+            f"{_failure_changes(metrics['generation_failure_category_changes'])} |"
         )
     lines.extend(
         [
@@ -604,6 +627,8 @@ def _model_metric_deltas(
     model_a: Mapping[str, Any],
     model_b: Mapping[str, Any],
 ) -> dict[str, Any]:
+    generation_a = _generation_reliability(model_a)
+    generation_b = _generation_reliability(model_b)
     return {
         "weighted_deterministic_mean": _numeric_delta(
             entry_a["weighted_mean_score"], entry_b["weighted_mean_score"]
@@ -628,7 +653,13 @@ def _model_metric_deltas(
             entry_a["end_to_end_success_rate"], entry_b["end_to_end_success_rate"]
         ),
         "successful_generation_rate": _rate_delta(
-            entry_a["successful_generation_rate"], entry_b["successful_generation_rate"]
+            generation_a["generation_success_rate"], generation_b["generation_success_rate"]
+        ),
+        "generation_failure_count": _numeric_delta(
+            generation_a["generation_failures"], generation_b["generation_failures"]
+        ),
+        "generation_failure_category_changes": _failure_category_changes(
+            generation_a["failure_categories"], generation_b["failure_categories"]
         ),
         "generation_failure_rate": _rate_delta(
             entry_a["generation_failure_rate"], entry_b["generation_failure_rate"]
@@ -819,6 +850,67 @@ def _comparison_metric_entry(
         "mean_test_execution_seconds": model["mean_test_execution_seconds"],
         "p95_test_execution_seconds": model["p95_test_execution_seconds"],
     }
+
+
+def _generation_reliability(model: Mapping[str, Any]) -> dict[str, Any]:
+    explicit = model.get("generation_reliability")
+    if isinstance(explicit, Mapping):
+        categories = explicit.get("failure_categories")
+        return {
+            "planned_generations": int(explicit["planned_generations"]),
+            "successful_generations": int(explicit["successful_generations"]),
+            "generation_failures": int(explicit["generation_failures"]),
+            "generation_success_rate": float(explicit["generation_success_rate"]),
+            "failure_categories": (
+                _ordered_failure_categories(categories) if isinstance(categories, Mapping) else {}
+            ),
+        }
+
+    # Schema-v2 historical exports have sanitized raw failure-code counts but predate normalized
+    # categories. Derive what can be known and assign any remaining generation failures to unknown.
+    planned = int(model.get("planned_samples", 0))
+    generated = int(model.get("successful_generations", 0))
+    failure_count = int(model.get("generation_failures", 0))
+    raw_counts = model.get("failure_codes")
+    normalized: dict[str, int] = {}
+    if isinstance(raw_counts, Mapping):
+        expanded = (
+            str(code) for code, count in raw_counts.items() for _ in range(max(0, int(count)))
+        )
+        normalized = generation_failure_category_counts(expanded)
+        normalized.pop("unknown", None)
+    known = sum(normalized.values())
+    if failure_count > known:
+        normalized["unknown"] = failure_count - known
+    return {
+        "planned_generations": planned,
+        "successful_generations": generated,
+        "generation_failures": failure_count,
+        "generation_success_rate": _ratio(generated, planned),
+        "failure_categories": _ordered_failure_categories(normalized),
+    }
+
+
+def _ordered_failure_categories(categories: Mapping[str, Any]) -> dict[str, int]:
+    return {
+        category: int(categories[category])
+        for category in GENERATION_FAILURE_CATEGORY_ORDER
+        if int(categories.get(category, 0)) > 0
+    }
+
+
+def _failure_category_changes(
+    categories_a: Mapping[str, Any], categories_b: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    changes = []
+    for category in GENERATION_FAILURE_CATEGORY_ORDER:
+        count_a = int(categories_a.get(category, 0))
+        count_b = int(categories_b.get(category, 0))
+        if count_a != count_b:
+            changes.append(
+                {"category": category, "a": count_a, "b": count_b, "delta": count_b - count_a}
+            )
+    return changes
 
 
 def _samples_for_model(
@@ -1044,6 +1136,20 @@ def _boolean(value: Any) -> str:
 
 def _cell(value: Any) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+def _failure_breakdown(categories: Mapping[str, Any]) -> str:
+    ordered = _ordered_failure_categories(categories)
+    return "none" if not ordered else ", ".join(f"{key}={value}" for key, value in ordered.items())
+
+
+def _failure_changes(changes: Sequence[Mapping[str, Any]]) -> str:
+    if not changes:
+        return "none"
+    return ", ".join(
+        f"{_cell(change['category'])}: {change['a']} → {change['b']} ({_signed(change['delta'])})"
+        for change in changes
+    )
 
 
 def _identity_label(identity: Mapping[str, Any]) -> str:

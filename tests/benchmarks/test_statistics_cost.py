@@ -51,7 +51,7 @@ def _row(
     cost: Decimal | None = None,
     currency: str | None = None,
     latency: int = 10,
-    tests_passed: int | None = None,
+    tests_passed: int | None = 8,
     tests_failed: int | None = None,
     test_execution_seconds: float | None = None,
     evaluation_lifecycle_seconds: float | None = None,
@@ -360,7 +360,7 @@ def test_correctness_perfect_score_end_to_end_and_timings_have_distinct_semantic
         _row(
             config,
             96.5,
-            tests_passed=6,
+            tests_passed=8,
             tests_failed=0,
             test_execution_seconds=2,
             evaluation_lifecycle_seconds=200,
@@ -368,7 +368,7 @@ def test_correctness_perfect_score_end_to_end_and_timings_have_distinct_semantic
         _row(
             config,
             92,
-            tests_passed=5,
+            tests_passed=7,
             tests_failed=1,
             test_execution_seconds=4,
             evaluation_lifecycle_seconds=260,
@@ -388,6 +388,28 @@ def test_correctness_perfect_score_end_to_end_and_timings_have_distinct_semantic
     assert entry.median_test_execution_seconds == 3
     assert entry.p95_test_execution_seconds == 4
     assert entry.mean_evaluation_lifecycle_seconds == 230
+
+
+def test_correctness_requires_nonempty_official_test_execution() -> None:
+    config = _config("correctness-invariant")
+    rows = [
+        _row(config, 40, task_id="zero-tests", tests_passed=0, tests_failed=0),
+        _row(config, 40, task_id="missing-tests", tests_passed=None, tests_failed=None),
+        _row(config, 40, tests_passed=1, tests_failed=0),
+        _row(config, 100, tests_passed=8, tests_failed=0),
+        _row(config, 70, tests_passed=7, tests_failed=1),
+    ]
+
+    entry = build_leaderboard([config], rows)[0]
+    tasks = {task.task_id: task for task in entry.per_task}
+
+    assert entry.correctness_pass_rate == 0.2
+    assert entry.end_to_end_success_rate == 0.2
+    assert tasks["zero-tests"].correctness_pass_rate == 0
+    assert tasks["missing-tests"].correctness_pass_rate == 0
+    assert tasks["lru-cache"].correctness_pass_rate == pytest.approx(1 / 3)
+    assert entry.weighted_mean_score == pytest.approx(50)
+    assert entry.coverage_adjusted_deterministic_score == pytest.approx(50)
 
 
 def test_cost_requires_pricing_and_complete_usage_and_preserves_currency() -> None:
@@ -450,3 +472,63 @@ def test_repeated_cost_distribution_uses_only_complete_known_cost_observations()
     assert incomplete["generation_cost_distributions"] == {}
     assert incomplete["mean_cost_per_planned_sample"] is None
     assert incomplete["mean_cost_per_planned_sample_status"] == ("unknown_incomplete_cost_coverage")
+
+
+def test_generation_reliability_distinguishes_full_partial_and_unavailable_models() -> None:
+    full = _config("full")
+    partial = _config("partial", 1).model_copy(update={"benchmark_run_id": full.benchmark_run_id})
+    unavailable = _config("unavailable", 2).model_copy(
+        update={"benchmark_run_id": full.benchmark_run_id}
+    )
+    rows = [
+        _row(full, 100, sample_index=1, tests_passed=8, tests_failed=0),
+        _row(full, 90, sample_index=2, tests_passed=8, tests_failed=0),
+        _row(partial, 80, sample_index=1, tests_passed=7, tests_failed=1),
+        _row(
+            partial,
+            None,
+            sample_index=2,
+            status=BenchmarkSampleStatus.GENERATION_FAILED,
+            failure_code="provider_rate_limited",
+        ),
+        _row(
+            unavailable,
+            None,
+            sample_index=1,
+            status=BenchmarkSampleStatus.GENERATION_FAILED,
+            failure_code="provider_unavailable",
+        ),
+        _row(
+            unavailable,
+            None,
+            sample_index=2,
+            status=BenchmarkSampleStatus.GENERATION_FAILED,
+            failure_code="provider_timeout",
+        ),
+    ]
+
+    entries = {
+        entry.model: entry for entry in build_leaderboard([full, partial, unavailable], rows)
+    }
+
+    assert entries["full"].reliability.generation.model_dump() == {
+        "planned_generations": 2,
+        "successful_generations": 2,
+        "generation_failures": 0,
+        "generation_success_rate": 1,
+        "failure_categories": {},
+    }
+    assert entries["partial"].reliability.generation.model_dump() == {
+        "planned_generations": 2,
+        "successful_generations": 1,
+        "generation_failures": 1,
+        "generation_success_rate": 0.5,
+        "failure_categories": {"rate_limited": 1},
+    }
+    assert entries["unavailable"].reliability.generation.model_dump() == {
+        "planned_generations": 2,
+        "successful_generations": 0,
+        "generation_failures": 2,
+        "generation_success_rate": 0,
+        "failure_categories": {"provider_unavailable": 1, "provider_timeout": 1},
+    }

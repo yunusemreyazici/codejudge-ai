@@ -267,6 +267,10 @@ def _generation_failure_code(code: str) -> str:
         "provider_timeout": "provider_timeout",
         "provider_unavailable": "provider_unavailable",
         "provider_rate_limited": "provider_rate_limited",
+        "provider_unauthorized": "provider_unauthorized",
+        "provider_forbidden": "provider_forbidden",
+        "provider_not_found": "provider_not_found",
+        "provider_error": "provider_error",
         "provider_refusal": "provider_refusal",
         "malformed_output": "malformed_output",
         "malformed_provider_response": "malformed_provider_response",
@@ -276,7 +280,7 @@ def _generation_failure_code(code: str) -> str:
         "provider_not_configured": "provider_not_configured",
         "empty_output": "empty_output",
     }
-    return mapping.get(code, "provider_unavailable")
+    return mapping.get(code, "provider_error")
 
 
 def _candidate_evaluation_request(sample: BenchmarkSample, source: str) -> EvaluationRequest:

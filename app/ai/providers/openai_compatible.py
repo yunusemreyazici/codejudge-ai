@@ -120,12 +120,20 @@ class OpenAICompatibleProvider:
         except httpx.RequestError as error:
             raise ProviderError("provider_unavailable", transient=True) from error
 
+        if response.status_code == 401:
+            raise ProviderError("provider_unauthorized", http_status=401)
+        if response.status_code == 403:
+            raise ProviderError("provider_forbidden", http_status=403)
+        if response.status_code == 404:
+            raise ProviderError("provider_not_found", http_status=404)
         if response.status_code == 429:
-            raise ProviderError("provider_rate_limited", transient=True)
+            raise ProviderError("provider_rate_limited", transient=True, http_status=429)
         if 500 <= response.status_code <= 599:
-            raise ProviderError("provider_unavailable", transient=True)
+            raise ProviderError(
+                "provider_unavailable", transient=True, http_status=response.status_code
+            )
         if response.status_code >= 400:
-            raise ProviderError("provider_request_rejected")
+            raise ProviderError("provider_request_rejected", http_status=response.status_code)
         try:
             payload: object = json.loads(payload_bytes)
         except (UnicodeDecodeError, json.JSONDecodeError) as error:

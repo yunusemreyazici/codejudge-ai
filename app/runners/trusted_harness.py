@@ -692,6 +692,10 @@ OFFICIAL_CASES: Mapping[str, tuple[OfficialCase, ...]] = {
     "circuit-breaker": _circuit_cases(),
 }
 
+OFFICIAL_TEST_CASE_COUNTS: Mapping[str, int] = {
+    task_id: len(cases) for task_id, cases in OFFICIAL_CASES.items()
+}
+
 
 class TrustedOfficialHarness:
     async def evaluate(self, task_id: str, transport: CandidateTransport) -> HarnessReport:
@@ -754,7 +758,7 @@ def _matches(expected: ExpectedStep, raw: object) -> bool:
     return all(telemetry[0].get(key) == value for key, value in expected.telemetry.items())
 
 
-assert {task_id: len(cases) for task_id, cases in OFFICIAL_CASES.items()} == {
+assert OFFICIAL_TEST_CASE_COUNTS == {
     "lru-cache": 8,
     "ttl-cache": 7,
     "rate-limiter": 7,

@@ -15,12 +15,15 @@ from app.benchmarks.models import (
     BenchmarkSampleStatus,
     ConfidenceInterval95,
     CorrectnessConsistencySummary,
+    GenerationReliabilitySummary,
     LeaderboardEntry,
     MetricSummary,
     PerTaskMetrics,
     ReliabilitySummary,
 )
+from app.benchmarks.reliability import generation_failure_category_counts
 from app.benchmarks.repositories import BenchmarkResultRow
+from app.runners.trusted_harness import OFFICIAL_TEST_CASE_COUNTS
 
 
 def metric_summary(values: list[float]) -> MetricSummary:
@@ -134,9 +137,9 @@ def _entry(config: BenchmarkModelConfig, samples: list[BenchmarkResultRow]) -> L
         if item.generation_cost is not None and item.currency is not None:
             costs[item.currency] += item.generation_cost
     perfect_score_rate = sum(score == 100 for score in scores) / len(scores) if scores else None
-    correctness_passes = sum(item.tests_failed == 0 for item in evaluated)
+    correctness_passes = sum(_is_correct_evaluation(item) for item in evaluated)
     end_to_end_successes = sum(
-        item.artifact is not None and item.tests_failed == 0 for item in evaluated
+        item.artifact is not None and _is_correct_evaluation(item) for item in evaluated
     )
     correctness_pass_rate = correctness_passes / len(evaluated) if evaluated else None
     consistency = CorrectnessConsistencySummary(
@@ -168,6 +171,19 @@ def _entry(config: BenchmarkModelConfig, samples: list[BenchmarkResultRow]) -> L
         provider_refusals=failure_codes.count("provider_refusal"),
         malformed_responses=sum(
             code in {"malformed_output", "malformed_provider_response"} for code in failure_codes
+        ),
+        generation=GenerationReliabilitySummary(
+            planned_generations=planned,
+            successful_generations=len(generated),
+            generation_failures=sum(
+                item.status is BenchmarkSampleStatus.GENERATION_FAILED for item in samples
+            ),
+            generation_success_rate=len(generated) / planned if planned else 0,
+            failure_categories=generation_failure_category_counts(
+                item.sample.failure_code
+                for item in samples
+                if item.status is BenchmarkSampleStatus.GENERATION_FAILED
+            ),
         ),
     )
     score_distribution = metric_summary(scores)
@@ -250,9 +266,9 @@ def _task_metrics(task_id: str, samples: list[BenchmarkResultRow]) -> PerTaskMet
         float(item.deterministic_score) for item in samples if item.deterministic_score is not None
     ]
     evaluated = [item for item in samples if item.deterministic_score is not None]
-    correctness_passes = sum(item.tests_failed == 0 for item in evaluated)
+    correctness_passes = sum(_is_correct_evaluation(item) for item in evaluated)
     end_to_end_successes = sum(
-        item.artifact is not None and item.tests_failed == 0 for item in evaluated
+        item.artifact is not None and _is_correct_evaluation(item) for item in evaluated
     )
     weighted_planned = sum(item.task_weight for item in samples)
     coverage_adjusted = (
@@ -326,6 +342,22 @@ def _stability_label(
     if deviation <= 15:
         return "moderate"
     return "low"
+
+
+def is_correct_evaluation(row: BenchmarkResultRow) -> bool:
+    """Return true only when the complete known official suite passed."""
+    return _is_correct_evaluation(row)
+
+
+def _is_correct_evaluation(row: BenchmarkResultRow) -> bool:
+    if row.tests_passed is None or row.tests_failed is None or row.tests_failed != 0:
+        return False
+    expected = OFFICIAL_TEST_CASE_COUNTS.get(row.task_id)
+    if expected is not None:
+        return row.tests_passed == expected
+    # Historical or extension tasks may not exist in the current trusted harness. Their persisted
+    # result can prove only that a nonempty test execution completed without a failure.
+    return row.tests_passed > 0
 
 
 def _student_t_critical_975(degrees_of_freedom: int) -> float:
