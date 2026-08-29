@@ -1,4 +1,4 @@
-"""Commit-safe Phase 7.2 benchmark configuration and cost preflight."""
+"""Commit-safe Phase 7.3 benchmark configuration and cost preflight."""
 
 from __future__ import annotations
 
@@ -14,9 +14,13 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from app.ai.prompts import canonical_json
 from app.benchmarks.datasets import BenchmarkDatasetRegistry
-from app.benchmarks.models import BenchmarkModelRequest, PricingSnapshot
+from app.benchmarks.models import (
+    BenchmarkModelRequest,
+    GenerationOutputMode,
+    PricingSnapshot,
+)
 from app.benchmarks.pricing import PricingCatalog
-from app.benchmarks.prompts import CODING_SYSTEM_PROMPT, coding_payload
+from app.benchmarks.prompts import coding_payload, coding_system_prompt
 from app.core.config import (
     DEFAULT_MAX_BENCHMARK_MODELS,
     DEFAULT_MAX_BENCHMARK_SAMPLES_PER_TASK,
@@ -38,6 +42,9 @@ class ProviderConfig(BaseModel):
     protocol: Literal["openai-compatible"] = "openai-compatible"
     base_url_env: str = Field(min_length=1, max_length=255)
     credential_env: str = Field(min_length=1, max_length=255)
+    output_mode: GenerationOutputMode = GenerationOutputMode.STRUCTURED_JSON
+    request_timeout_seconds: float = Field(default=30, gt=0, le=600)
+    max_concurrent_requests: int | None = Field(default=None, ge=1, le=100)
 
     @field_validator("base_url_env", "credential_env")
     @classmethod
@@ -132,6 +139,9 @@ class BenchmarkRunConfig(BaseModel):
                 model.top_p,
                 model.max_output_tokens,
                 model.seed,
+                self.providers[model.provider_id].output_mode,
+                self.providers[model.provider_id].request_timeout_seconds,
+                self.providers[model.provider_id].max_concurrent_requests,
             )
             for model in self.models
         ]
@@ -148,6 +158,23 @@ class BenchmarkRunConfig(BaseModel):
             }:
                 raise ValueError(f"pricing references an unconfigured model: {key}")
         return self
+
+    def resolved_models(self) -> tuple[BenchmarkModelRequest, ...]:
+        """Apply explicit provider capabilities to immutable model provenance."""
+        return tuple(
+            model.model_copy(
+                update={
+                    "output_mode": self.providers[model.provider_id].output_mode,
+                    "request_timeout_seconds": self.providers[
+                        model.provider_id
+                    ].request_timeout_seconds,
+                    "max_concurrent_requests": self.providers[
+                        model.provider_id
+                    ].max_concurrent_requests,
+                }
+            )
+            for model in self.models
+        )
 
     def pricing_catalog(self) -> PricingCatalog:
         entries: dict[tuple[str, str], PricingSnapshot] = {}
@@ -170,6 +197,9 @@ class PlannedModel(BaseModel):
     currency: str | None = None
     credential_configured: bool
     endpoint_configured: bool
+    output_mode: GenerationOutputMode
+    request_timeout_seconds: float
+    max_concurrent_requests: int | None = None
 
 
 class BenchmarkPlan(BaseModel):
@@ -230,16 +260,13 @@ def build_plan(
         max_total_generations=max_total_generations,
     )
     env = dict(os.environ) if environment is None else environment
-    task_input_bounds = {
-        entry.task_id: _input_token_bound(resolved_tasks, entry.task_id)
-        for entry in dataset.task_entries
-    }
     catalog = config.pricing_catalog()
     planned_models: list[PlannedModel] = []
     totals: dict[str, Decimal] = {}
     unknown: list[str] = []
     warnings: list[str] = []
-    for model in config.models:
+    resolved_models = config.resolved_models()
+    for model in resolved_models:
         provider = config.providers[model.provider_id]
         endpoint = env.get(provider.base_url_env, "").strip()
         credential = env.get(provider.credential_env, "").strip()
@@ -252,7 +279,13 @@ def build_plan(
         if not credential:
             warnings.append(f"Provider credential is not configured for {model.provider_id}.")
         pricing = catalog.get(model.provider_id, model.model)
-        maximum_input = sum(task_input_bounds.values()) * config.samples_per_task
+        maximum_input = (
+            sum(
+                _input_token_bound(resolved_tasks, entry.task_id, model.output_mode)
+                for entry in dataset.task_entries
+            )
+            * config.samples_per_task
+        )
         maximum_output = task_count * config.samples_per_task * model.max_output_tokens
         estimate = _maximum_cost(pricing, maximum_input, maximum_output)
         identity = f"{model.provider_id}/{model.model}"
@@ -273,11 +306,20 @@ def build_plan(
                 currency=None if pricing is None else pricing.currency,
                 credential_configured=bool(credential),
                 endpoint_configured=bool(endpoint),
+                output_mode=model.output_mode,
+                request_timeout_seconds=model.request_timeout_seconds,
+                max_concurrent_requests=model.max_concurrent_requests,
             )
         )
     _validate_budget(config, totals, unknown)
     if config.ai_evaluation.enabled:
         warnings.append("AI evaluation adds separate provider cost not included in this estimate.")
+    output_modes = {model.output_mode for model in resolved_models}
+    if len(output_modes) > 1:
+        warnings.append(
+            "Mixed generation output modes are configured; prefer one mode for direct model "
+            "comparisons and disclose the difference in reports."
+        )
     return BenchmarkPlan(
         name=config.name,
         dataset_id=dataset.dataset_id,
@@ -324,10 +366,10 @@ def validate_run_preflight(
 
 def resolved_provider_values(
     config: BenchmarkRunConfig, environment: dict[str, str] | None = None
-) -> dict[str, tuple[str, str]]:
+) -> dict[str, tuple[str, str, float, int | None]]:
     """Resolve secrets only at worker construction; callers must never log the return value."""
     env = dict(os.environ) if environment is None else environment
-    resolved: dict[str, tuple[str, str]] = {}
+    resolved: dict[str, tuple[str, str, float, int | None]] = {}
     selected_provider_ids = {model.provider_id for model in config.models}
     for provider_id in sorted(selected_provider_ids):
         provider = config.providers[provider_id]
@@ -335,14 +377,20 @@ def resolved_provider_values(
         credential = env.get(provider.credential_env, "").strip()
         if not base_url or not credential or not _valid_http_url(base_url):
             raise BenchmarkConfigError(f"Provider configuration is incomplete for {provider_id}.")
-        resolved[provider_id] = (base_url, credential)
+        resolved[provider_id] = (
+            base_url,
+            credential,
+            provider.request_timeout_seconds,
+            provider.max_concurrent_requests,
+        )
     return resolved
 
 
-def _input_token_bound(tasks: TaskRegistry, task_id: str) -> int:
+def _input_token_bound(tasks: TaskRegistry, task_id: str, output_mode: GenerationOutputMode) -> int:
     task = tasks.get(task_id).specification
-    public_payload = canonical_json(coding_payload(task))
-    return len(CODING_SYSTEM_PROMPT.encode("utf-8")) + len(public_payload.encode("utf-8")) + 512
+    public_payload = canonical_json(coding_payload(task, output_mode))
+    system_prompt = coding_system_prompt(output_mode)
+    return len(system_prompt.encode("utf-8")) + len(public_payload.encode("utf-8")) + 512
 
 
 def _maximum_cost(

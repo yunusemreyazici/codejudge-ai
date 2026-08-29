@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -64,6 +64,19 @@ class ProviderUsage(BaseModel):
     output_tokens: int | None = Field(default=None, ge=0)
 
 
+class ProviderResponseDiagnostics(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    http_status: int = Field(ge=100, le=599)
+    envelope_type: Literal["root", "data-wrapper"]
+    choices_count: int = Field(ge=1)
+    finish_reason: str | None = None
+    content_type: str
+    content_length: int = Field(ge=0)
+    usage_present: bool
+    provider_response_model: str | None = None
+
+
 class ProviderResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -71,6 +84,7 @@ class ProviderResponse(BaseModel):
     response_id: str | None = None
     usage: ProviderUsage = Field(default_factory=ProviderUsage)
     latency_ms: int = Field(ge=0)
+    diagnostics: ProviderResponseDiagnostics | None = None
 
 
 class StructuredLLMRequest(BaseModel):

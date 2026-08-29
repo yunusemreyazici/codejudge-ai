@@ -420,6 +420,9 @@ def _model_document(config: Any, rows: list[BenchmarkResultRow]) -> dict[str, An
             "top_p": config.top_p,
             "max_output_tokens": config.max_output_tokens,
             "seed": config.seed,
+            "output_mode": config.output_mode,
+            "request_timeout_seconds": config.request_timeout_seconds,
+            "max_concurrent_requests": config.max_concurrent_requests,
         },
         "pricing_snapshot": pricing,
         "planned_samples": len(selected),
@@ -714,9 +717,18 @@ def _provenance_section(document: dict[str, Any], results_hash: str) -> list[str
     ]
     lines.extend(
         f"  - `{model['provider_id']}/{model['model']}`: "
-        f"`{model['model_configuration_fingerprint']}`"
+        f"`{model['model_configuration_fingerprint']}`; output mode "
+        f"`{model['generation_parameters']['output_mode']}`; request timeout "
+        f"`{model['generation_parameters']['request_timeout_seconds']}s`; provider concurrency "
+        f"`{model['generation_parameters']['max_concurrent_requests'] or 'unlimited'}`"
         for model in document["models"]
     )
+    output_modes = {model["generation_parameters"]["output_mode"] for model in document["models"]}
+    if len(output_modes) > 1:
+        lines.append(
+            "- Comparability warning: this run mixes generation output modes; direct model "
+            "comparisons should preferably use one shared mode."
+        )
     lines.append("- Task/test fingerprints:")
     lines.extend(
         f"  - `{task['task_id']}@{task['task_version']}`: task "

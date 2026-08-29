@@ -41,6 +41,9 @@ def model_configuration_fingerprint(model: BenchmarkModelRequest, coding_prompt_
             "top_p": model.top_p,
             "max_output_tokens": model.max_output_tokens,
             "seed": model.seed,
+            "output_mode": model.output_mode,
+            "request_timeout_seconds": model.request_timeout_seconds,
+            "max_concurrent_requests": model.max_concurrent_requests,
             "coding_prompt_hash": coding_prompt_hash,
         }
     )

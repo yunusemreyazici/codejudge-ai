@@ -91,6 +91,15 @@ def test_model_and_run_fingerprints_cover_every_fairness_control() -> None:
     changed_model_hash = model_configuration_fingerprint(
         model.model_copy(update={"temperature": 0.2}), CODING_PROMPT_HASH
     )
+    changed_output_mode_hash = model_configuration_fingerprint(
+        model.model_copy(update={"output_mode": "raw_source"}), CODING_PROMPT_HASH
+    )
+    changed_timeout_hash = model_configuration_fingerprint(
+        model.model_copy(update={"request_timeout_seconds": 120}), CODING_PROMPT_HASH
+    )
+    changed_concurrency_hash = model_configuration_fingerprint(
+        model.model_copy(update={"max_concurrent_requests": 1}), CODING_PROMPT_HASH
+    )
     baseline = benchmark_run_fingerprint(
         dataset_hash="a" * 64,
         ordered_model_hashes=[model_hash],
@@ -102,6 +111,9 @@ def test_model_and_run_fingerprints_cover_every_fairness_control() -> None:
     )
 
     assert changed_model_hash != model_hash
+    assert changed_output_mode_hash != model_hash
+    assert changed_timeout_hash != model_hash
+    assert changed_concurrency_hash != model_hash
     for changes in (
         {"dataset_hash": "c" * 64},
         {"ordered_model_hashes": [changed_model_hash]},

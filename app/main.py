@@ -143,8 +143,8 @@ def create_app(
         version=codejudge_version(),
         summary="Deterministic code evaluation and reproducible coding benchmarks",
         description=(
-            "CodeJudge AI Phase 7.2: authoritative deterministic scoring, a versioned "
-            "multi-task portfolio, and auditable real-model benchmark workflows."
+            "CodeJudge AI Phase 7.3: authoritative deterministic scoring, a versioned "
+            "multi-task portfolio, and provider-compatible real-model benchmark workflows."
         ),
         lifespan=lifespan,
     )

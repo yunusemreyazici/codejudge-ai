@@ -24,7 +24,7 @@ async def test_database_was_created_by_current_migration_head(
             text("SELECT to_regclass('public.benchmark_runs')")
         )
 
-    assert revision == "20260828_0004"
+    assert revision == "20260829_0006"
     assert table_name == "evaluations"
     assert jobs_table == "evaluation_jobs"
     assert outbox_table == "outbox_events"

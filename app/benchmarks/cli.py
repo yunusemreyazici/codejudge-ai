@@ -1,9 +1,10 @@
-"""Single Phase 7.2 CLI for planning, running, inspecting, and exporting benchmarks."""
+"""Single Phase 7.3 CLI for planning, running, inspecting, and exporting benchmarks."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -12,9 +13,13 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import UUID
 
+import httpx
 from redis.asyncio import Redis
 
 from app.ai.factory import create_ai_service
+from app.ai.models import ProviderResponse, StructuredLLMRequest
+from app.ai.providers.base import ProviderError
+from app.ai.providers.openai_compatible import OpenAICompatibleProvider
 from app.analysis.factory import create_static_analysis_engine
 from app.benchmarks.datasets import BenchmarkDatasetRegistry, DatasetRegistryError
 from app.benchmarks.exporting import (
@@ -24,17 +29,25 @@ from app.benchmarks.exporting import (
     render_report,
     write_export,
 )
-from app.benchmarks.models import BenchmarkCreateRequest, BenchmarkRunStatus, BenchmarkSampleStatus
+from app.benchmarks.models import (
+    BenchmarkCreateRequest,
+    BenchmarkRunStatus,
+    BenchmarkSampleStatus,
+    CodingOutput,
+    GenerationOutputMode,
+)
+from app.benchmarks.prompts import coding_payload, coding_system_prompt
 from app.benchmarks.repositories import SqlAlchemyBenchmarkRepository
 from app.benchmarks.run_config import (
     BenchmarkPlan,
     BenchmarkRunConfig,
     build_plan,
     load_benchmark_config,
+    resolved_provider_values,
     validate_run_preflight,
 )
 from app.benchmarks.service import BenchmarkError, BenchmarkService
-from app.core.config import Settings
+from app.core.config import DEFAULT_LLM_MAX_RESPONSE_BYTES, Settings
 from app.core.logging import configure_logging
 from app.db.repositories import PersistenceError, SqlAlchemyEvaluationRepository
 from app.db.session import Database
@@ -60,6 +73,10 @@ def build_parser() -> argparse.ArgumentParser:
     run = commands.add_parser("run", help="durably accept an explicitly requested benchmark")
     run.add_argument("config", type=Path)
     run.add_argument("--wait", action="store_true", help="wait for a terminal run state")
+    probe = commands.add_parser("probe", help="make one sanitized provider diagnostic request")
+    probe.add_argument("config", type=Path)
+    probe.add_argument("--model", required=True)
+    probe.add_argument("--show-content", action="store_true")
     status = commands.add_parser("status", help="show durable benchmark progress")
     status.add_argument("run_id", type=UUID)
     export = commands.add_parser("export", help="write deterministic machine-readable results")
@@ -84,6 +101,7 @@ def main() -> None:
         BenchmarkCLIError,
         BenchmarkExportError,
         BenchmarkError,
+        ProviderError,
         DatasetRegistryError,
         PersistenceError,
     ) as error:
@@ -102,6 +120,12 @@ async def _dispatch(arguments: argparse.Namespace) -> int:
         return 0
     if arguments.command == "run":
         return await _run(arguments.config, wait=arguments.wait)
+    if arguments.command == "probe":
+        return await _probe(
+            arguments.config,
+            model_name=arguments.model,
+            show_content=arguments.show_content,
+        )
     if arguments.command == "status":
         await _status(arguments.run_id)
         return 0
@@ -124,6 +148,77 @@ async def _dispatch(arguments: argparse.Namespace) -> int:
         print(f"Results SHA-256: {artifacts.results_sha256}")
         return 0
     raise BenchmarkCLIError("Unknown command.")
+
+
+async def _probe(
+    config_path: Path,
+    *,
+    model_name: str,
+    show_content: bool,
+    environment: dict[str, str] | None = None,
+    client: httpx.AsyncClient | None = None,
+) -> int:
+    """Issue exactly one generation request without creating benchmark state."""
+    config = load_benchmark_config(config_path)
+    matches = [model for model in config.resolved_models() if model.model == model_name]
+    if len(matches) != 1:
+        qualifier = "not configured" if not matches else "configured more than once"
+        raise BenchmarkCLIError(f"Probe model is {qualifier}: {model_name}")
+    model = matches[0]
+    base_url, credential, timeout_seconds, max_concurrent_requests = resolved_provider_values(
+        config, environment
+    )[model.provider_id]
+    tasks = TaskRegistry.default()
+    dataset = BenchmarkDatasetRegistry.default(tasks).get(config.dataset.id, config.dataset.version)
+    task = tasks.get(dataset.task_entries[0].task_id).specification
+    provider = OpenAICompatibleProvider(
+        base_url=base_url,
+        api_key=credential,
+        timeout_seconds=timeout_seconds,
+        max_attempts=1,
+        max_response_bytes=DEFAULT_LLM_MAX_RESPONSE_BYTES,
+        max_concurrent_requests=max_concurrent_requests,
+        client=client,
+    )
+    request = StructuredLLMRequest(
+        component="coding_generation_probe",
+        model=model.model,
+        system_prompt=coding_system_prompt(model.output_mode),
+        input_payload=coding_payload(task, model.output_mode),
+        response_schema=CodingOutput.model_json_schema(),
+        max_output_tokens=model.max_output_tokens,
+        temperature=model.temperature,
+        top_p=model.top_p,
+        seed=model.seed,
+    )
+    try:
+        response = (
+            await provider.complete_raw_source(request)
+            if model.output_mode is GenerationOutputMode.RAW_SOURCE
+            else await provider.complete_structured(request)
+        )
+    finally:
+        await provider.close()
+    _print_probe_response(response, show_content=show_content)
+    return 0
+
+
+def _print_probe_response(response: ProviderResponse, *, show_content: bool) -> None:
+    diagnostics = response.diagnostics
+    if diagnostics is None:
+        raise BenchmarkCLIError("Provider response diagnostics are unavailable.")
+    print(f"HTTP status: {diagnostics.http_status}")
+    print(f"Envelope type: {diagnostics.envelope_type}")
+    print(f"Choices count: {diagnostics.choices_count}")
+    print(f"Finish reason: {diagnostics.finish_reason or 'unknown'}")
+    print(f"Content type: {diagnostics.content_type}")
+    print(f"Content length: {diagnostics.content_length}")
+    print(f"Usage presence: {'yes' if diagnostics.usage_present else 'no'}")
+    print(f"Latency: {response.latency_ms} ms")
+    print(f"Provider response model: {diagnostics.provider_response_model or 'unknown'}")
+    if show_content:
+        print("Content (JSON string):")
+        print(json.dumps(response.content, ensure_ascii=False))
 
 
 async def _run(config_path: Path, *, wait: bool) -> int:
@@ -151,7 +246,7 @@ async def _run(config_path: Path, *, wait: bool) -> int:
             BenchmarkCreateRequest(
                 dataset_id=config.dataset.id,
                 dataset_version=config.dataset.version,
-                models=list(config.models),
+                models=list(config.resolved_models()),
                 samples_per_task=config.samples_per_task,
             ),
             idempotency_key=None,
@@ -318,6 +413,13 @@ def _print_plan(plan: BenchmarkPlan) -> None:
         f"{plan.planned_generations}"
     )
     print(f"AI evaluation: {'enabled' if plan.ai_evaluation_enabled else 'disabled'}")
+    for model in plan.models:
+        print(
+            f"Generation transport ({model.provider_id}/{model.model}): "
+            f"{model.output_mode.value}, timeout {model.request_timeout_seconds:g}s, "
+            "provider concurrency "
+            f"{model.max_concurrent_requests or 'unlimited'}"
+        )
     print(
         f"Known pricing: {plan.model_count - len(plan.unknown_pricing)}/{plan.model_count} models"
     )

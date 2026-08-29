@@ -5,6 +5,15 @@ exercises. Each task has a public contract, versioned official tests, a private 
 and stable task/test fingerprints. Generated candidates always pass through the same Docker,
 static-analysis, scoring, and snapshot pipeline used by ordinary CodeJudge evaluations.
 
+Coding-generation transport is an explicit provider capability, never inferred from a provider
+name. `structured_json` is the default and validates the schema before evaluation. `raw_source`
+preserves complete non-empty assistant content exactly, even when it contains Markdown fences or
+prose; the evaluator then determines whether those bytes form a valid solution. Output mode and
+bounded request timeout and provider concurrency limit are persisted in model provenance and
+fingerprints. Direct comparisons should use one shared mode; mixed-mode runs are explicitly
+disclosed. One provider adapter object is shared across models in a worker process, so an explicit
+provider semaphore prevents those models from bypassing the configured request limit.
+
 ## Dataset versions
 
 `codejudge-core@1` remains the immutable single-task Phase 7 dataset. `codejudge-core@2` adds six

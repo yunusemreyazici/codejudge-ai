@@ -183,8 +183,11 @@ prevention.
 ## Benchmark generation boundary
 
 The coding-generation provider receives only public task identity, title, description, language,
-entrypoint, timeout, and the structured output contract. Dataset files contain task/test
-fingerprints, not test source or reference implementations. API keys, Docker/Redis/database
+entrypoint, timeout, and the configured output contract. `structured_json` uses strict JSON Schema;
+benchmark-only `raw_source` treats non-empty assistant content as exact untrusted candidate bytes
+without cleanup. Phase 6 judge and adversarial-generation traffic remains strict structured JSON.
+Dataset files contain task/test fingerprints, not test source or reference implementations. API
+keys, Docker/Redis/database
 metadata, hidden tests, and reference solutions are never included in generation requests or
 benchmark provenance.
 
@@ -194,6 +197,11 @@ and analysis pipeline. Redelivery resumes from a durable artifact instead of cal
 again, while query and leaderboard endpoints neither execute source nor contact providers.
 Generated comments and strings remain untrusted input to the separately configured Phase 6 judge,
 preserving the existing prompt-injection separation.
+
+The benchmark `probe` command makes exactly one provider request and does not create a run. Its
+default output is limited to status, normalized envelope shape, content type/length, usage
+presence, latency, finish reason, and provider response model. Raw content is printed only with the
+explicit `--show-content` diagnostic option; secrets and prompts are never printed.
 
 ## Remaining risks
 

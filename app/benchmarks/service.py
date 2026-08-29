@@ -31,7 +31,7 @@ from app.benchmarks.models import (
     LeaderboardEntry,
 )
 from app.benchmarks.pricing import PricingCatalog
-from app.benchmarks.prompts import CODING_PROMPT_HASH
+from app.benchmarks.prompts import CODING_PROMPT_HASH, model_coding_prompt_hash
 from app.benchmarks.repositories import BenchmarkRepository, BenchmarkResultRow
 from app.benchmarks.statistics import build_leaderboard
 from app.db.repositories import PersistenceError
@@ -91,7 +91,8 @@ class BenchmarkService:
         configs: list[BenchmarkModelConfig] = []
         config_hashes: list[str] = []
         for ordinal, model in enumerate(request.models):
-            identity = model_configuration_fingerprint(model, CODING_PROMPT_HASH)
+            model_prompt_hash = model_coding_prompt_hash(model.output_mode)
+            identity = model_configuration_fingerprint(model, model_prompt_hash)
             if identity in config_hashes:
                 raise BenchmarkLimitError("Duplicate model configurations are not allowed.")
             config_hashes.append(identity)
@@ -107,7 +108,10 @@ class BenchmarkService:
                     top_p=model.top_p,
                     max_output_tokens=model.max_output_tokens,
                     seed=model.seed,
-                    coding_prompt_hash=CODING_PROMPT_HASH,
+                    output_mode=model.output_mode,
+                    request_timeout_seconds=model.request_timeout_seconds,
+                    max_concurrent_requests=model.max_concurrent_requests,
+                    coding_prompt_hash=model_prompt_hash,
                     model_configuration_fingerprint=identity,
                     pricing=self._pricing.get(model.provider_id, model.model),
                 )
@@ -245,6 +249,9 @@ class BenchmarkService:
                 "top_p": row.config.top_p,
                 "max_output_tokens": row.config.max_output_tokens,
                 "seed": row.config.seed,
+                "output_mode": row.config.output_mode,
+                "request_timeout_seconds": row.config.request_timeout_seconds,
+                "max_concurrent_requests": row.config.max_concurrent_requests,
             },
             evaluation_duration_seconds=row.sample.evaluation_duration_seconds,
             total_duration_seconds=row.sample.total_duration_seconds,

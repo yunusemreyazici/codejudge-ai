@@ -26,10 +26,13 @@ def test_example_config_plans_fourteen_generations_without_provider_calls() -> N
     assert plan.model_count == 2
     assert plan.planned_generations == 14
     assert plan.ai_evaluation_enabled is False
-    assert plan.estimated_maximum_costs == {"USD": Decimal("0.249942000000")}
+    assert plan.estimated_maximum_costs == {"USD": Decimal("0.250292000000")}
     assert plan.unknown_pricing == ()
     assert "estimate:" in plan.estimate_basis
     assert len(plan.warnings) == 4
+    assert {model.output_mode.value for model in plan.models} == {"structured_json"}
+    assert {model.request_timeout_seconds for model in plan.models} == {30}
+    assert {model.max_concurrent_requests for model in plan.models} == {None}
 
 
 def test_unknown_pricing_is_not_zero_and_prevents_budget_enforcement() -> None:
@@ -72,9 +75,25 @@ def test_run_preflight_requires_credentials_and_matching_ai_policy() -> None:
         validate_run_preflight(config, plan, ai_enabled=True)
 
     assert resolved_provider_values(config, environment) == {
-        "provider-a": ("https://a.invalid/v1", "secret-a"),
-        "provider-b": ("https://b.invalid/v1", "secret-b"),
+        "provider-a": ("https://a.invalid/v1", "secret-a", 30, None),
+        "provider-b": ("https://b.invalid/v1", "secret-b", 30, None),
     }
+
+
+def test_provider_transport_capability_resolves_into_model_identity() -> None:
+    payload = load_benchmark_config(EXAMPLE).model_dump(mode="python")
+    payload["providers"]["provider-a"]["output_mode"] = "raw_source"
+    payload["providers"]["provider-a"]["request_timeout_seconds"] = 120
+    payload["providers"]["provider-a"]["max_concurrent_requests"] = 1
+    config = BenchmarkRunConfig.model_validate(payload)
+
+    models = config.resolved_models()
+
+    assert models[0].output_mode.value == "raw_source"
+    assert models[0].request_timeout_seconds == 120
+    assert models[0].max_concurrent_requests == 1
+    assert models[1].output_mode.value == "structured_json"
+    assert "Mixed generation output modes" in " ".join(build_plan(config, environment={}).warnings)
 
 
 def test_config_rejects_unregistered_and_duplicate_model_identities() -> None:
@@ -98,3 +117,21 @@ def test_config_loader_rejects_secrets_and_unknown_fields(tmp_path: Path) -> Non
 
     with pytest.raises(BenchmarkConfigError, match="Extra inputs are not permitted"):
         load_benchmark_config(path)
+
+
+@pytest.mark.parametrize("timeout", [0, 601])
+def test_provider_request_timeout_is_bounded(timeout: int) -> None:
+    payload = load_benchmark_config(EXAMPLE).model_dump(mode="python")
+    payload["providers"]["provider-a"]["request_timeout_seconds"] = timeout
+
+    with pytest.raises(ValueError, match="request_timeout_seconds"):
+        BenchmarkRunConfig.model_validate(payload)
+
+
+@pytest.mark.parametrize("concurrency", [0, 101])
+def test_provider_request_concurrency_is_bounded(concurrency: int) -> None:
+    payload = load_benchmark_config(EXAMPLE).model_dump(mode="python")
+    payload["providers"]["provider-a"]["max_concurrent_requests"] = concurrency
+
+    with pytest.raises(ValueError, match="max_concurrent_requests"):
+        BenchmarkRunConfig.model_validate(payload)

@@ -22,6 +22,7 @@ from app.benchmarks.models import (
     BenchmarkSample,
     BenchmarkSampleStatus,
     GeneratedSolutionArtifact,
+    GenerationOutputMode,
     PricingSnapshot,
 )
 from app.db.models import (
@@ -155,6 +156,8 @@ class BenchmarkRepository(Protocol):
     async def recover_stale(
         self, now: datetime, retry_base_delay_seconds: float, limit: int = 100
     ) -> int: ...
+
+    async def reconcile_terminal_runs(self, now: datetime, limit: int = 100) -> int: ...
 
     async def ready_outbox(self, now: datetime, limit: int = 100) -> Sequence[OutboxEvent]: ...
 
@@ -544,6 +547,30 @@ class SqlAlchemyBenchmarkRepository:
             raise PersistenceError("Benchmark recovery persistence is unavailable.") from error
         return recovered
 
+    async def reconcile_terminal_runs(self, now: datetime, limit: int = 100) -> int:
+        """Repair derived run lifecycle after concurrent or interrupted terminal transitions."""
+        finalized = 0
+        try:
+            async with self._session_factory() as session:
+                async with session.begin():
+                    run_ids = list(
+                        await session.scalars(
+                            select(BenchmarkRunRecord.benchmark_run_id)
+                            .where(
+                                BenchmarkRunRecord.status.in_(
+                                    [BenchmarkRunStatus.QUEUED, BenchmarkRunStatus.RUNNING]
+                                )
+                            )
+                            .order_by(BenchmarkRunRecord.created_at)
+                            .limit(limit)
+                        )
+                    )
+                    for run_id in run_ids:
+                        finalized += int(await self._finish_run_if_terminal(session, run_id, now))
+        except SQLAlchemyError as error:
+            raise PersistenceError("Benchmark run reconciliation is unavailable.") from error
+        return finalized
+
     async def ready_outbox(self, now: datetime, limit: int = 100) -> Sequence[OutboxEvent]:
         try:
             async with self._session_factory() as session:
@@ -618,7 +645,13 @@ class SqlAlchemyBenchmarkRepository:
         return existing, False
 
     @staticmethod
-    async def _finish_run_if_terminal(session: AsyncSession, run_id: UUID, now: datetime) -> None:
+    async def _finish_run_if_terminal(session: AsyncSession, run_id: UUID, now: datetime) -> bool:
+        # Serialize terminal reconciliation before counting. Without this run-row lock, concurrent
+        # final samples can each observe another transaction's uncommitted nonterminal status and
+        # leave a fully terminal run stuck as running.
+        run = await session.get(BenchmarkRunRecord, run_id, with_for_update=True)
+        if run is None:
+            return False
         remaining = await session.scalar(
             select(func.count())
             .select_from(BenchmarkSampleRecord)
@@ -628,18 +661,19 @@ class SqlAlchemyBenchmarkRepository:
             )
         )
         if remaining == 0:
-            run = await session.get(BenchmarkRunRecord, run_id, with_for_update=True)
-            if run is not None:
-                skipped = await session.scalar(
-                    select(func.count())
-                    .select_from(BenchmarkSampleRecord)
-                    .where(
-                        BenchmarkSampleRecord.benchmark_run_id == run_id,
-                        BenchmarkSampleRecord.status == BenchmarkSampleStatus.SKIPPED,
-                    )
+            skipped = await session.scalar(
+                select(func.count())
+                .select_from(BenchmarkSampleRecord)
+                .where(
+                    BenchmarkSampleRecord.benchmark_run_id == run_id,
+                    BenchmarkSampleRecord.status == BenchmarkSampleStatus.SKIPPED,
                 )
-                run.status = BenchmarkRunStatus.PARTIAL if skipped else BenchmarkRunStatus.COMPLETED
+            )
+            run.status = BenchmarkRunStatus.PARTIAL if skipped else BenchmarkRunStatus.COMPLETED
+            if run.completed_at is None:
                 run.completed_at = now
+            return True
+        return False
 
 
 def _run_record(run: BenchmarkRun) -> BenchmarkRunRecord:
@@ -709,6 +743,9 @@ def _config_from_record(record: BenchmarkModelConfigRecord) -> BenchmarkModelCon
         top_p=record.top_p,
         max_output_tokens=record.max_output_tokens,
         seed=record.seed,
+        output_mode=GenerationOutputMode(record.output_mode),
+        request_timeout_seconds=record.request_timeout_seconds,
+        max_concurrent_requests=record.max_concurrent_requests,
         coding_prompt_hash=record.coding_prompt_hash,
         model_configuration_fingerprint=record.model_configuration_fingerprint,
         pricing=pricing,

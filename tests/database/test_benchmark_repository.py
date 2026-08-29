@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -35,6 +36,7 @@ def _plan(*, idempotency_key: str | None = "benchmark-key") -> tuple:
         temperature=0,
         top_p=1,
         max_output_tokens=100,
+        max_concurrent_requests=1,
         coding_prompt_hash="a" * 64,
         model_configuration_fingerprint="b" * 64,
     )
@@ -85,6 +87,10 @@ async def test_benchmark_repository_persists_plan_artifact_and_atomic_completion
 
     assert created is True
     assert stored.benchmark_run_id == run.benchmark_run_id
+    stored_configs = await repository.get_configs(run.benchmark_run_id)
+    assert stored_configs[0].output_mode.value == "structured_json"
+    assert stored_configs[0].request_timeout_seconds == 30
+    assert stored_configs[0].max_concurrent_requests == 1
     assert len(await repository.ready_outbox(NOW)) == 1
     claimed = await repository.claim(sample.benchmark_sample_id, "worker", NOW, 10)
     assert claimed is not None and claimed.status is BenchmarkSampleStatus.GENERATING
@@ -124,6 +130,68 @@ async def test_benchmark_repository_persists_plan_artifact_and_atomic_completion
     assert completed is not None and completed.status is BenchmarkSampleStatus.COMPLETED
     assert completed_run is not None and completed_run.status is BenchmarkRunStatus.COMPLETED
     assert await database_harness.repository.get(sample.evaluation_id) == snapshot
+
+
+async def test_concurrent_all_failure_transitions_finalize_run(
+    database_harness: DatabaseHarness,
+) -> None:
+    repository = database_harness.benchmark_repository
+    run, config, first = _plan(idempotency_key=None)
+    second = first.model_copy(
+        update={
+            "benchmark_sample_id": uuid4(),
+            "evaluation_id": uuid4(),
+            "sample_index": 2,
+        }
+    )
+    run = run.model_copy(update={"planned_sample_count": 2})
+    await repository.create_plan(run, [config], [first, second])
+    assert await repository.claim(first.benchmark_sample_id, "worker-a", NOW, 10)
+    assert await repository.claim(second.benchmark_sample_id, "worker-b", NOW, 10)
+
+    statuses = await asyncio.gather(
+        repository.record_failure(
+            first.benchmark_sample_id,
+            "worker-a",
+            "malformed_provider_response",
+            generation=True,
+            retryable=False,
+            now=NOW + timedelta(seconds=1),
+            retry_base_delay_seconds=0,
+        ),
+        repository.record_failure(
+            second.benchmark_sample_id,
+            "worker-b",
+            "provider_timeout",
+            generation=True,
+            retryable=False,
+            now=NOW + timedelta(seconds=1),
+            retry_base_delay_seconds=0,
+        ),
+    )
+
+    finalized = await repository.get_run(run.benchmark_run_id)
+    assert statuses == [
+        BenchmarkSampleStatus.GENERATION_FAILED,
+        BenchmarkSampleStatus.GENERATION_FAILED,
+    ]
+    assert finalized is not None
+    assert finalized.status is BenchmarkRunStatus.COMPLETED
+    assert finalized.completed_at == NOW + timedelta(seconds=1)
+
+    async with database_harness.database.engine.begin() as connection:
+        await connection.execute(
+            text(
+                "UPDATE benchmark_runs SET status = 'running', completed_at = NULL "
+                "WHERE benchmark_run_id = :run_id"
+            ),
+            {"run_id": run.benchmark_run_id},
+        )
+    assert await repository.reconcile_terminal_runs(NOW + timedelta(seconds=2)) == 1
+    repaired = await repository.get_run(run.benchmark_run_id)
+    assert repaired is not None
+    assert repaired.status is BenchmarkRunStatus.COMPLETED
+    assert repaired.completed_at == NOW + timedelta(seconds=2)
 
 
 async def test_benchmark_idempotency_and_payload_conflict(

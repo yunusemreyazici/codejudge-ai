@@ -64,13 +64,19 @@ async def run_benchmark_worker(settings: Settings) -> None:
     providers: dict[str, OpenAICompatibleProvider] = {}
     if settings.benchmark_config_path is not None:
         config = load_benchmark_config(Path(settings.benchmark_config_path))
-        for provider_id, (base_url, credential) in resolved_provider_values(config).items():
+        for provider_id, (
+            base_url,
+            credential,
+            request_timeout_seconds,
+            max_concurrent_requests,
+        ) in resolved_provider_values(config).items():
             providers[provider_id] = OpenAICompatibleProvider(
                 base_url=base_url,
                 api_key=credential,
-                timeout_seconds=settings.llm_timeout_seconds,
+                timeout_seconds=request_timeout_seconds,
                 max_attempts=settings.llm_max_attempts,
                 max_response_bytes=settings.llm_max_response_bytes,
+                max_concurrent_requests=max_concurrent_requests,
             )
     elif settings.benchmark_base_url is not None and settings.benchmark_api_key is not None:
         providers[settings.benchmark_provider_id] = OpenAICompatibleProvider(
@@ -100,6 +106,7 @@ async def run_benchmark_worker(settings: Settings) -> None:
             try:
                 await publisher.dispatch_once()
                 await repository.recover_stale(utc_now(), settings.retry_base_delay_seconds)
+                await repository.reconcile_terminal_runs(utc_now())
             except Exception as error:
                 logger.error("benchmark maintenance failed error_type=%s", type(error).__name__)
             try:

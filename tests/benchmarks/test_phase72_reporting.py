@@ -112,6 +112,8 @@ def _config(run_id: UUID, model: str, ordinal: int, *, pricing: bool) -> Benchma
         temperature=0,
         top_p=1,
         max_output_tokens=100,
+        output_mode="raw_source" if model == "refusal" else "structured_json",
+        request_timeout_seconds=120 if model == "refusal" else 30,
         coding_prompt_hash="b" * 64,
         model_configuration_fingerprint=("c" if ordinal == 0 else "d") * 64,
         pricing=(
@@ -209,6 +211,7 @@ async def test_export_is_deterministic_auditable_and_report_is_structural(tmp_pa
     assert first.document["models"][0]["model_configuration_fingerprint"]
     assert first.document["totals"]["provider_refusals"] == 1
     assert first.document["models"][1]["actual_generation_costs"] == {}
+    assert first.document["models"][1]["generation_parameters"]["output_mode"] == "raw_source"
     assert first.document["evaluator"]["ai_cost"]["status"] == "not_applicable"
     assert first.document["samples"][0]["evaluation"]["score_breakdown"]["correctness"] == 75
     assert first.document["samples"][0]["evaluation"]["tests"]["total"] == 8
@@ -219,6 +222,7 @@ async def test_export_is_deterministic_auditable_and_report_is_structural(tmp_pa
     assert first.results_sha256 in report
     assert "AI score" in report
     assert "provider_refusal" in report
+    assert "mixes generation output modes" in report
 
     output = tmp_path / "run" / "results.json"
     write_export(first, output)

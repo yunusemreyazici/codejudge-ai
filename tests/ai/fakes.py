@@ -25,6 +25,12 @@ class FakeProvider:
                 self.responses[(component, model)].append(json.dumps(output))
 
     async def complete_structured(self, request: StructuredLLMRequest) -> ProviderResponse:
+        return await self._complete(request)
+
+    async def complete_raw_source(self, request: StructuredLLMRequest) -> ProviderResponse:
+        return await self._complete(request)
+
+    async def _complete(self, request: StructuredLLMRequest) -> ProviderResponse:
         self.requests.append(request)
         output = self.responses[(request.component, request.model)].popleft()
         if isinstance(output, ProviderError):
@@ -49,6 +55,12 @@ class TaskAwareFakeProvider:
         self.closed = False
 
     async def complete_structured(self, request: StructuredLLMRequest) -> ProviderResponse:
+        return await self._complete(request)
+
+    async def complete_raw_source(self, request: StructuredLLMRequest) -> ProviderResponse:
+        return await self._complete(request)
+
+    async def _complete(self, request: StructuredLLMRequest) -> ProviderResponse:
         self.requests.append(request)
         public_task = request.input_payload.get("public_task")
         if not isinstance(public_task, dict) or not isinstance(public_task.get("id"), str):

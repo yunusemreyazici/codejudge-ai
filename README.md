@@ -227,7 +227,7 @@ and temporary directory are **not** a sandbox. Never use this backend for untrus
 | `LLM_MAX_RESPONSE_BYTES` | `262144` | HTTP response cap before parsing |
 | `LLM_MAX_ADVERSARIAL_TESTS` | `5` | Generated-test count ceiling |
 | `BENCHMARK_ENABLED` | `false` | Enable benchmark API planning and worker configuration |
-| `BENCHMARK_CONFIG` | unset | Phase 7.2 YAML used by the benchmark worker to resolve provider env names |
+| `BENCHMARK_CONFIG` | unset | Phase 7.3 YAML used by the benchmark worker to resolve provider capabilities and env names |
 | `BENCHMARK_BASE_URL` | unset | Legacy single OpenAI-compatible coding provider base URL; never persisted |
 | `BENCHMARK_API_KEY` | unset | Coding provider credential; never persisted or logged |
 | `BENCHMARK_PROVIDER_ID` | `default-benchmark-openai-compatible` | Generation provider identity |
@@ -528,9 +528,11 @@ is null—not free—and currencies are totaled separately without automatic con
 
 Comparable runs must share the dataset fingerprint, coding-prompt version and hash, deterministic
 evaluator fingerprint, samples per task, and benchmark-policy version. Reproducibility metadata
-also includes model parameters, sandbox/analyzer/scoring identity, pricing version, generation
-attempt count, and exact generated-source hashes. Provider seeds and hashes improve provenance but
-cannot make an externally hosted model perfectly reproducible.
+also includes model parameters, generation output mode, provider request timeout,
+sandbox/analyzer/scoring identity, pricing version, generation attempt count, and exact
+generated-source hashes. Changing output mode or timeout changes the model and run fingerprints.
+Provider seeds and hashes improve provenance but cannot make an externally hosted model perfectly
+reproducible.
 
 Leaderboard results are conditional on dataset selection, public prompt wording, model parameters,
 sampling randomness, provider backend/version changes, rate limits, test quality, and any configured
@@ -562,6 +564,40 @@ environment variables. It never stores their values. The only supported real gen
 is OpenAI-compatible chat completions; providers with a different protocol are unsupported until a
 truthful adapter is implemented.
 
+Phase 7.3 makes the coding-generation response capability explicit per provider. The default
+`output_mode: structured_json` keeps strict JSON Schema requests and strict local decoding.
+`output_mode: raw_source` omits `response_format` and treats assistant message content as the exact
+candidate source—without fence stripping, prose cleanup, or newline normalization. Empty content
+fails safely as `empty_output`; all non-empty content proceeds through the ordinary untrusted-code
+evaluator. Set a bounded provider-level `request_timeout_seconds` (maximum 600; `120` is recommended
+for the ClinePass smoke configuration). Both modes explicitly request non-streaming responses. This
+capability applies only to benchmark coding generation: Phase 6 judge and adversarial-test requests
+remain strict structured JSON.
+
+The OpenAI-compatible adapter accepts both the ordinary completion envelope (`choices` at the
+root) and gateway wrappers with the completion under `data`. Unknown gateway metadata, reasoning,
+token-detail, and cost fields are ignored unless CodeJudge explicitly uses them. Provider-envelope
+errors are reported as `malformed_provider_response`, distinct from invalid structured candidate
+JSON (`malformed_output`).
+
+Prefer one output mode across directly compared models. If modes are mixed, planning warns and the
+JSON/Markdown reports disclose each model's mode and timeout. For ClinePass, use:
+
+```yaml
+providers:
+  clinepass:
+    protocol: openai-compatible
+    base_url_env: CLINE_API_BASE_URL
+    credential_env: CLINE_API_KEY
+    output_mode: raw_source
+    request_timeout_seconds: 120
+    max_concurrent_requests: 1
+```
+
+`max_concurrent_requests` is a per-provider, per-worker-process HTTP limiter shared by every model
+using that provider object. When omitted, the existing benchmark worker concurrency remains the
+only limit. The configured value is persisted in model provenance and changes fingerprints.
+
 Start with a copy of
 [`benchmark-configs/real-smoke.example.yaml`](benchmark-configs/real-smoke.example.yaml), replace
 the placeholder provider/model identities and example pricing with reviewed values, then export the
@@ -578,8 +614,8 @@ require conversion. The estimate is not actual spend. Actual provider-reported t
 calculated from the immutable pricing snapshot are stored after generation.
 
 For a smoke run, use two models, seven v2 tasks, and one sample per task: 14 generations. Verify
-credentials, structured source output, Docker evaluation, failures, token/cost coverage, candidates,
-and provenance before creating a full configuration. A typical full comparison uses three models,
+credentials, configured source-output mode, Docker evaluation, failures, token/cost coverage,
+candidates, and provenance before creating a full configuration. A typical full comparison uses three models,
 seven tasks, and three samples per task (63 generations). Repeated samples expose hosted-model
 nondeterminism; the values remain user-controlled and are not hard-coded. Keep AI evaluation
 disabled for the primary comparison unless a separate, explicitly priced judge experiment is
@@ -596,16 +632,22 @@ The exact operational flow is:
    start `uv run codejudge-benchmark-worker`.
 7. Export only the endpoint and credential variables named by the YAML; never print them.
 8. Run `uv run codejudge-benchmark plan benchmark-configs/real-smoke.yaml` and review every warning.
-9. Explicitly accept paid execution with
+9. Before a multi-sample run, issue one sanitized probe per intended model with
+   `uv run codejudge-benchmark probe benchmark-configs/real-smoke.yaml --model <MODEL>`.
+   Add `--show-content` only when explicitly reviewing provider output.
+10. Explicitly accept paid execution with
    `uv run codejudge-benchmark run benchmark-configs/real-smoke.yaml`.
-10. Inspect with `uv run codejudge-benchmark status <RUN_ID>`.
-11. Generate artifacts with `uv run codejudge-benchmark report <RUN_ID>`.
-12. Review `benchmark-results/generated/<RUN_ID>/` before deliberately copying measured artifacts
+11. Inspect with `uv run codejudge-benchmark status <RUN_ID>`.
+12. Generate artifacts with `uv run codejudge-benchmark report <RUN_ID>`.
+13. Review `benchmark-results/generated/<RUN_ID>/` before deliberately copying measured artifacts
     into `benchmark-results/published/<name>/`.
 
 `run` prints the complete plan before durably queuing samples; it is the explicit execution
 boundary and has no interactive confirmation. It returns immediately by default because the
 benchmark worker owns durable asynchronous execution; `--wait` is available for convenience.
+`probe` bypasses benchmark persistence and makes exactly one provider request with retries disabled;
+its default output contains only sanitized envelope diagnostics, never prompts, credentials, or
+candidate content.
 `export` writes canonical `results.json` plus opaque UUID-named candidate files. `report` also
 writes `report.md`, whose metadata identifies the exact results JSON SHA-256. Source hashes are
 recomputed byte-for-byte before export. A non-terminal run requires `--allow-incomplete`; a failed
@@ -638,6 +680,7 @@ handling, Docker daemon boundary, and remaining risks.
 - **Phase 7 — Multi-model benchmark + leaderboard (implemented):** durable controlled comparisons
 - **Phase 7.1 — Dataset expansion (implemented):** seven rigorous, diverse engineering tasks
 - **Phase 7.2 — Real benchmark workflow (implemented):** safe planning, export, and reporting
+- **Phase 7.3 — Provider-compatible generation (implemented):** explicit output modes and timeouts
 - **Phase 8 — Observability + production hardening (planned):** tracing, metrics, and operations
 
 ## Development

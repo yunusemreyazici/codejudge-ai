@@ -11,7 +11,12 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 BENCHMARK_POLICY_VERSION = "1"
-CODING_PROMPT_VERSION = "1"
+CODING_PROMPT_VERSION = "2"
+
+
+class GenerationOutputMode(StrEnum):
+    STRUCTURED_JSON = "structured_json"
+    RAW_SOURCE = "raw_source"
 
 
 class BenchmarkRunStatus(StrEnum):
@@ -49,9 +54,11 @@ class GenerationFailureCode(StrEnum):
     PROVIDER_RATE_LIMITED = "provider_rate_limited"
     PROVIDER_REFUSAL = "provider_refusal"
     MALFORMED_OUTPUT = "malformed_output"
+    MALFORMED_PROVIDER_RESPONSE = "malformed_provider_response"
     OUTPUT_TOO_LARGE = "output_too_large"
     PROVIDER_REQUEST_REJECTED = "provider_request_rejected"
     PROVIDER_NOT_CONFIGURED = "provider_not_configured"
+    EMPTY_OUTPUT = "empty_output"
 
 
 class DatasetTaskEntry(BaseModel):
@@ -99,6 +106,9 @@ class BenchmarkModelRequest(BaseModel):
     top_p: float = Field(default=1, gt=0, le=1)
     max_output_tokens: int = Field(default=4000, gt=0, le=100_000)
     seed: int | None = None
+    output_mode: GenerationOutputMode = GenerationOutputMode.STRUCTURED_JSON
+    request_timeout_seconds: float = Field(default=30, gt=0, le=600)
+    max_concurrent_requests: int | None = Field(default=None, ge=1, le=100)
 
 
 class BenchmarkCreateRequest(BaseModel):
@@ -123,6 +133,9 @@ class BenchmarkModelConfig(BaseModel):
     top_p: float
     max_output_tokens: int
     seed: int | None = None
+    output_mode: GenerationOutputMode = GenerationOutputMode.STRUCTURED_JSON
+    request_timeout_seconds: float = Field(default=30, gt=0, le=600)
+    max_concurrent_requests: int | None = Field(default=None, ge=1, le=100)
     coding_prompt_hash: str
     model_configuration_fingerprint: str
     pricing: PricingSnapshot | None = None
@@ -265,7 +278,7 @@ class BenchmarkSampleDetail(BenchmarkSampleSummary):
     provider_response_id: str | None = None
     pricing_version: str | None = None
     generation_attempts: int
-    generation_parameters: dict[str, int | float | None]
+    generation_parameters: dict[str, int | float | str | None]
     evaluation_duration_seconds: float | None = None
     total_duration_seconds: float | None = None
 

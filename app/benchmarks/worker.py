@@ -19,9 +19,10 @@ from app.benchmarks.models import (
     BenchmarkSample,
     CodingOutput,
     GeneratedSolutionArtifact,
+    GenerationOutputMode,
 )
 from app.benchmarks.pricing import calculate_generation_cost
-from app.benchmarks.prompts import CODING_SYSTEM_PROMPT, coding_payload
+from app.benchmarks.prompts import coding_payload, coding_system_prompt
 from app.benchmarks.queue import BenchmarkQueueMessage, BenchmarkQueueProtocol
 from app.benchmarks.repositories import BenchmarkRepository
 from app.benchmarks.service import benchmark_evaluator_fingerprint
@@ -125,11 +126,7 @@ class BenchmarkWorker:
             snapshot = await self._evaluations.get_snapshot(claimed.evaluation_id)
             if snapshot is None:
                 snapshot = await self._evaluations.evaluate_snapshot(
-                    EvaluationRequest(
-                        task_id=claimed.task_id,
-                        language="python",
-                        code=artifact.source,
-                    ),
+                    _candidate_evaluation_request(claimed, artifact.source),
                     evaluation_id=claimed.evaluation_id,
                     created_at=claimed.created_at,
                 )
@@ -199,24 +196,30 @@ class BenchmarkWorker:
         provider = self._providers.get(config.provider_id)
         if provider is None:
             raise ProviderError("provider_not_configured")
-        response = await provider.complete_structured(
-            StructuredLLMRequest(
-                component="coding_generation",
-                model=config.model,
-                system_prompt=CODING_SYSTEM_PROMPT,
-                input_payload=coding_payload(task),
-                response_schema=CodingOutput.model_json_schema(),
-                max_output_tokens=config.max_output_tokens,
-                temperature=config.temperature,
-                top_p=config.top_p,
-                seed=config.seed,
-            )
+        request = StructuredLLMRequest(
+            component="coding_generation",
+            model=config.model,
+            system_prompt=coding_system_prompt(config.output_mode),
+            input_payload=coding_payload(task, config.output_mode),
+            response_schema=CodingOutput.model_json_schema(),
+            max_output_tokens=config.max_output_tokens,
+            temperature=config.temperature,
+            top_p=config.top_p,
+            seed=config.seed,
         )
-        try:
-            output = CodingOutput.model_validate(json.loads(response.content))
-        except (json.JSONDecodeError, ValidationError) as error:
-            raise ProviderError("malformed_output") from error
-        source_hash, source_size = source_identity(output.source)
+        if config.output_mode is GenerationOutputMode.RAW_SOURCE:
+            response = await provider.complete_raw_source(request)
+            if response.content == "":
+                raise ProviderError("empty_output")
+            source = response.content
+        else:
+            response = await provider.complete_structured(request)
+            try:
+                output = CodingOutput.model_validate(json.loads(response.content))
+            except (json.JSONDecodeError, ValidationError) as error:
+                raise ProviderError("malformed_output") from error
+            source = output.source
+        source_hash, source_size = source_identity(source)
         if source_size > self._max_code_size:
             raise ProviderError("output_too_large")
         cost = calculate_generation_cost(
@@ -226,7 +229,7 @@ class BenchmarkWorker:
         )
         return GeneratedSolutionArtifact(
             benchmark_sample_id=sample.benchmark_sample_id,
-            source=output.source,
+            source=source,
             source_hash=source_hash,
             source_size=source_size,
             generation_attempts=sample.attempt_count,
@@ -266,10 +269,15 @@ def _generation_failure_code(code: str) -> str:
         "provider_rate_limited": "provider_rate_limited",
         "provider_refusal": "provider_refusal",
         "malformed_output": "malformed_output",
-        "malformed_provider_response": "malformed_output",
+        "malformed_provider_response": "malformed_provider_response",
         "provider_output_too_large": "output_too_large",
         "output_too_large": "output_too_large",
         "provider_request_rejected": "provider_request_rejected",
         "provider_not_configured": "provider_not_configured",
+        "empty_output": "empty_output",
     }
     return mapping.get(code, "provider_unavailable")
+
+
+def _candidate_evaluation_request(sample: BenchmarkSample, source: str) -> EvaluationRequest:
+    return EvaluationRequest(task_id=sample.task_id, language="python", code=source)

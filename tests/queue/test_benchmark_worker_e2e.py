@@ -261,7 +261,13 @@ async def test_phase7_fake_models_real_postgres_redis_docker_benchmark_e2e(
         "dataset_version": "1",
         "models": [
             {"provider_id": "fake", "model": "good", "temperature": 0},
-            {"provider_id": "fake", "model": "bad", "temperature": 0},
+            {
+                "provider_id": "fake",
+                "model": "bad",
+                "temperature": 0,
+                "output_mode": "raw_source",
+                "request_timeout_seconds": 120,
+            },
             {"provider_id": "fake", "model": "refusal", "temperature": 0},
         ],
         "samples_per_task": 1,
@@ -288,7 +294,7 @@ async def test_phase7_fake_models_real_postgres_redis_docker_benchmark_e2e(
     assert await publisher.dispatch_once() == 3
     provider = FakeProvider()
     provider.add("coding_generation", "good", [{"language": "python", "source": CORRECT_LRU}])
-    provider.add("coding_generation", "bad", [{"language": "python", "source": INCORRECT_LRU}])
+    provider.add("coding_generation", "bad", [INCORRECT_LRU])
     provider.add("coding_generation", "refusal", [ProviderError("provider_refusal")])
     worker = BenchmarkWorker(
         worker_id="benchmark-e2e",
@@ -329,6 +335,10 @@ async def test_phase7_fake_models_real_postgres_redis_docker_benchmark_e2e(
     assert summary.json()["status"] == "completed"
     assert summary.json()["completed_samples"] == 2
     assert summary.json()["generation_failures"] == 1
+    assert {model["output_mode"] for model in summary.json()["models"]} == {
+        "structured_json",
+        "raw_source",
+    }
     entries = leaderboard.json()
     assert [entry["model"] for entry in entries] == ["good", "bad", "refusal"]
     assert entries[0]["weighted_mean_score"] == 100

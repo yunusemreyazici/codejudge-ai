@@ -295,6 +295,19 @@ class BenchmarkModelConfigRecord(Base):
         UniqueConstraint("benchmark_run_id", "ordinal", name="uq_benchmark_model_ordinal"),
         CheckConstraint("ordinal >= 0", name="ck_benchmark_model_ordinal"),
         CheckConstraint("max_output_tokens > 0", name="ck_benchmark_model_max_tokens"),
+        CheckConstraint(
+            "output_mode IN ('structured_json', 'raw_source')",
+            name="ck_benchmark_model_output_mode",
+        ),
+        CheckConstraint(
+            "request_timeout_seconds > 0 AND request_timeout_seconds <= 600",
+            name="ck_benchmark_model_request_timeout",
+        ),
+        CheckConstraint(
+            "max_concurrent_requests IS NULL OR "
+            "(max_concurrent_requests > 0 AND max_concurrent_requests <= 100)",
+            name="ck_benchmark_model_max_concurrent_requests",
+        ),
         Index("ix_benchmark_model_configs_run", "benchmark_run_id"),
     )
 
@@ -312,6 +325,9 @@ class BenchmarkModelConfigRecord(Base):
     top_p: Mapped[float] = mapped_column(Float, nullable=False)
     max_output_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
     seed: Mapped[int | None] = mapped_column(Integer)
+    output_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    request_timeout_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    max_concurrent_requests: Mapped[int | None] = mapped_column(Integer)
     coding_prompt_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     model_configuration_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     pricing_version: Mapped[str | None] = mapped_column(Text)
