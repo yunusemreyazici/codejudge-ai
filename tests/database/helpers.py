@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from app.ai.models import AIIdentity
+from app.core.version import codejudge_version
 from app.evaluator.models import (
     ComplexityMetrics,
     EvaluationRequest,
@@ -33,6 +34,7 @@ def job_fixture(
     evaluation_id: UUID | None = None,
     idempotency_key: str | None = None,
     max_attempts: int = 3,
+    expected_codejudge_version: str | None = None,
 ) -> EvaluationJob:
     now = created_at or datetime(2026, 8, 27, 10, tzinfo=UTC)
     request = EvaluationRequest(task_id="lru-cache", language="python", code=source)
@@ -60,7 +62,11 @@ def job_fixture(
         expected_execution=ExecutionEnvironmentSnapshot(backend="local"),
         expected_analyzer_versions={},
         expected_scoring_policy_version="1",
-        expected_codejudge_version="0.7.5",
+        expected_codejudge_version=(
+            codejudge_version()
+            if expected_codejudge_version is None
+            else expected_codejudge_version
+        ),
         expected_ai_identity=AIIdentity(
             enabled=False,
             policy_version="1",

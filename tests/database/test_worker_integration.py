@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import update
 
 from app.core.config import ExecutionBackend, Settings
+from app.core.version import codejudge_version
 from app.db.models import EvaluationJobRecord
 from app.evaluator.engine import EvaluationEngine
 from app.evaluator.models import RunnerCapability, RunnerResult
@@ -121,6 +122,10 @@ def _worker(
     )
 
 
+def test_job_fixture_uses_current_authoritative_codejudge_version() -> None:
+    assert job_fixture().expected_codejudge_version == codejudge_version()
+
+
 async def test_worker_completes_snapshot_and_duplicate_delivery_does_not_rerun(
     database_harness: DatabaseHarness,
     correct_lru: str,
@@ -195,6 +200,10 @@ async def test_retryable_failure_waits_then_stops_at_max_attempts(
         ({"tests_fingerprint": "0" * 64}, "tests_fingerprint_mismatch"),
         ({"expected_scoring_policy_version": "old"}, "scoring_policy_version_mismatch"),
         ({"expected_analyzer_versions": {"ruff": "old"}}, "analyzer_versions_mismatch"),
+        (
+            {"expected_codejudge_version": "0.0.0-test-mismatch"},
+            "codejudge_version_mismatch",
+        ),
     ],
 )
 async def test_worker_rejects_changed_persisted_identity(
