@@ -14,3 +14,20 @@ rewrite provenance to make a result look better. Never place credentials, provid
 authorization headers, database URLs, Redis URLs, or raw logs here. The exporter builds artifacts
 from allowlisted persisted fields and performs a best-effort secret scan, but human review remains
 required.
+
+Current exports use results schema version `2`. The primary weighted deterministic mean measures
+quality over completed evaluations only and must be read with coverage. Correctness pass uses
+completed evaluations with zero failed official tests; end-to-end success uses all planned samples;
+perfect deterministic score means exactly 100 and is not a synonym for correctness. The
+coverage-adjusted deterministic score assigns zero to missing planned evaluations while preserving
+task weights.
+
+> Coverage-adjusted score is supplemental and intentionally penalizes missing planned evaluations.
+> It must not be confused with the primary successful-evaluation quality score.
+
+Reports keep provider generation latency, sandbox test execution duration, and the longer
+sample-to-snapshot evaluation lifecycle duration separate. Cost-per-success fields are unknown or
+not applicable when their denominator is zero or generation-cost coverage is incomplete—never
+zero by assumption. Historical version-1 artifacts remain historical records; regenerate from the
+same immutable database snapshots to obtain version-2 names and metrics rather than editing an
+artifact in place.

@@ -45,6 +45,10 @@ def _row(
     cost: Decimal | None = None,
     currency: str | None = None,
     latency: int = 10,
+    tests_passed: int | None = None,
+    tests_failed: int | None = None,
+    test_execution_seconds: float | None = None,
+    evaluation_lifecycle_seconds: float | None = None,
 ) -> BenchmarkResultRow:
     sample_id = uuid4()
     sample = BenchmarkSample(
@@ -92,6 +96,10 @@ def _row(
         judge_score=75 if score is not None else None,
         adversarial_robustness=90 if score is not None else None,
         ai_status="completed" if score is not None else None,
+        tests_passed=tests_passed,
+        tests_failed=tests_failed,
+        test_execution_seconds=test_execution_seconds,
+        evaluation_lifecycle_seconds=evaluation_lifecycle_seconds,
     )
 
 
@@ -116,9 +124,26 @@ def test_leaderboard_keeps_score_coverage_weighting_ai_and_cost_separate() -> No
     good = _config("good")
     flaky = _config("flaky", 1).model_copy(update={"benchmark_run_id": good.benchmark_run_id})
     rows = [
-        _row(good, 100, weight=2, cost=Decimal("0.10"), currency="USD", latency=10),
-        _row(good, 50, task_id="other", weight=1, cost=Decimal("0.20"), currency="EUR", latency=30),
-        _row(flaky, 100),
+        _row(
+            good,
+            100,
+            weight=2,
+            cost=Decimal("0.10"),
+            currency="USD",
+            latency=10,
+            tests_failed=0,
+        ),
+        _row(
+            good,
+            50,
+            task_id="other",
+            weight=1,
+            cost=Decimal("0.20"),
+            currency="EUR",
+            latency=30,
+            tests_failed=1,
+        ),
+        _row(flaky, 100, tests_failed=0),
         _row(flaky, None, status=BenchmarkSampleStatus.GENERATION_FAILED),
         _row(flaky, None, status=BenchmarkSampleStatus.SKIPPED),
     ]
@@ -130,12 +155,76 @@ def test_leaderboard_keeps_score_coverage_weighting_ai_and_cost_separate() -> No
     assert first.weighted_mean_score == pytest.approx(250 / 3)
     assert first.deterministic_scores.mean == 75
     assert first.coverage == 1
-    assert first.pass_rate == 0.5
+    assert first.perfect_deterministic_score_rate == 0.5
+    assert first.correctness_pass_rate == 0.5
+    assert first.end_to_end_success_rate == 0.5
+    assert first.coverage_adjusted_deterministic_score == pytest.approx(250 / 3)
     assert first.mean_ai_score == 80
     assert first.generation_costs == {"EUR": Decimal("0.20"), "USD": Decimal("0.10")}
     assert leaderboard[0].coverage == pytest.approx(1 / 3)
     assert leaderboard[0].successful_generation_rate == pytest.approx(1 / 3)
     assert leaderboard[0].generation_failure_rate == pytest.approx(1 / 3)
+    assert leaderboard[0].coverage_adjusted_deterministic_score == pytest.approx(100 / 3)
+
+
+def test_observed_seven_sample_shape_keeps_primary_quality_and_coverage_separate() -> None:
+    complete = _config("complete")
+    partial = _config("partial", 1).model_copy(
+        update={"benchmark_run_id": complete.benchmark_run_id}
+    )
+    complete_scores = [96.50, 87.73, 96.75, 95.20, 90.13, 92.72, 91.13]
+    partial_scores = [76.40, 58.27, 99.20, 89.03, 90.63]
+    rows = [
+        *[_row(complete, score, tests_failed=0) for score in complete_scores],
+        *[_row(partial, score, tests_failed=0) for score in partial_scores],
+        _row(partial, None, status=BenchmarkSampleStatus.GENERATION_FAILED),
+        _row(partial, None, status=BenchmarkSampleStatus.GENERATION_FAILED),
+    ]
+
+    by_model = {entry.model: entry for entry in build_leaderboard([complete, partial], rows)}
+
+    assert by_model["complete"].weighted_mean_score == pytest.approx(92.88)
+    assert by_model["partial"].weighted_mean_score == pytest.approx(82.706)
+    assert by_model["complete"].coverage == 1
+    assert by_model["partial"].coverage == pytest.approx(5 / 7)
+    assert by_model["complete"].coverage_adjusted_deterministic_score == pytest.approx(92.88)
+    assert by_model["partial"].coverage_adjusted_deterministic_score == pytest.approx(59.0757142857)
+
+
+def test_correctness_perfect_score_end_to_end_and_timings_have_distinct_semantics() -> None:
+    config = _config("semantic-cases")
+    rows = [
+        _row(
+            config,
+            96.5,
+            tests_passed=6,
+            tests_failed=0,
+            test_execution_seconds=2,
+            evaluation_lifecycle_seconds=200,
+        ),
+        _row(
+            config,
+            92,
+            tests_passed=5,
+            tests_failed=1,
+            test_execution_seconds=4,
+            evaluation_lifecycle_seconds=260,
+        ),
+        _row(config, None, status=BenchmarkSampleStatus.GENERATION_FAILED),
+    ]
+
+    entry = build_leaderboard([config], rows)[0]
+
+    assert entry.weighted_mean_score == pytest.approx(94.25)
+    assert entry.coverage == pytest.approx(2 / 3)
+    assert entry.coverage_adjusted_deterministic_score == pytest.approx(188.5 / 3)
+    assert entry.correctness_pass_rate == 0.5
+    assert entry.end_to_end_success_rate == pytest.approx(1 / 3)
+    assert entry.perfect_deterministic_score_rate == 0
+    assert entry.mean_test_execution_seconds == 3
+    assert entry.median_test_execution_seconds == 3
+    assert entry.p95_test_execution_seconds == 4
+    assert entry.mean_evaluation_lifecycle_seconds == 230
 
 
 def test_cost_requires_pricing_and_complete_usage_and_preserves_currency() -> None:

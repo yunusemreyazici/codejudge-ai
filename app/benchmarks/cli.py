@@ -1,4 +1,4 @@
-"""Single Phase 7.3 CLI for planning, running, inspecting, and exporting benchmarks."""
+"""Single CLI for planning, running, inspecting, and exporting benchmarks."""
 
 from __future__ import annotations
 

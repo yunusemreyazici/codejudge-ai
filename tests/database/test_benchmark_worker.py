@@ -153,6 +153,11 @@ async def test_fake_models_generate_evaluate_fail_and_rank_without_zero_imputati
         "oversized",
     }
     assert leaderboard[0].weighted_mean_score == 100
+    assert leaderboard[0].correctness_pass_rate == 1
+    assert leaderboard[0].end_to_end_success_rate == 1
+    assert leaderboard[0].perfect_deterministic_score_rate == 1
+    assert leaderboard[0].mean_test_execution_seconds is not None
+    assert leaderboard[0].mean_evaluation_lifecycle_seconds is not None
     assert leaderboard[0].generation_costs == {"USD": Decimal("0.000600000000")}
     assert leaderboard[1].weighted_mean_score is not None
     assert leaderboard[1].weighted_mean_score < 100

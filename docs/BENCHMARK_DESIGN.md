@@ -74,6 +74,51 @@ workers and used to reject invalid AI-generated adversarial tests. They are neve
 APIs, included in coding-model or judge payloads, written to Redis, or logged. The generic
 reference-discovery and sandbox path is tested with both class-based and function-based tasks.
 
+## Metric semantics
+
+The primary ranking metric is the task-weighted deterministic mean over completed evaluations
+only. A generation or evaluation failure has no trustworthy deterministic score and remains null;
+it is not converted to zero in the primary metric. Rank tie-breakers remain coverage, deterministic
+median, and then the stable model-configuration fingerprint.
+
+Every rate states its denominator:
+
+- **Coverage:** completed evaluations / all planned samples.
+- **Successful generation rate:** persisted generation artifacts / all planned samples.
+- **Evaluation completion rate:** completed evaluations / successful generations.
+- **Correctness pass rate:** completed evaluations with `tests.failed == 0` / completed
+  evaluations. This uses the persisted official-test result, never a score threshold.
+- **End-to-end success rate:** planned samples that generated, completed evaluation, and had
+  `tests.failed == 0` / all planned samples.
+- **Perfect deterministic score rate:** completed evaluations with total deterministic score
+  exactly `100` / completed evaluations. This is distinct from correctness pass rate because the
+  non-correctness scoring components can keep an otherwise correct solution below 100.
+
+The **coverage-adjusted deterministic score** is the same task-weighted calculation over all
+planned samples, using the deterministic score for completed evaluations and zero for missing
+evaluations. It is an end-to-end supplemental measure and never changes the primary rank.
+
+> Coverage-adjusted score is supplemental and intentionally penalizes missing planned evaluations.
+> It must not be confused with the primary successful-evaluation quality score.
+
+Timing fields are also intentionally separate:
+
+- generation latency is the provider generation request latency;
+- test execution duration is the authoritative sandbox correctness-test duration persisted as
+  `evaluation.tests.duration_seconds`;
+- evaluation lifecycle duration is wall-clock time from benchmark sample creation to immutable
+  evaluation snapshot completion, including queueing and generation.
+
+No authoritative analyzer-inclusive evaluator runtime is currently persisted, so reporting does
+not synthesize one by subtracting unrelated timestamps. Generation cost coverage is the fraction
+of successful generations with recorded usage-based cost. Per-success generation and correct-
+evaluation costs are available only with a nonzero denominator and complete generation-cost
+coverage; failed requests without returned token usage remain unknown rather than free.
+
+Canonical exports use schema version `2`. Version 2 replaces ambiguous `pass_rate` and
+`duration_seconds` reporting names with the precise fields above; persisted historical snapshots
+and deterministic scores are unchanged and can be re-exported without a benchmark rerun.
+
 ## Interpretation limits
 
 Dataset results depend on task selection, public wording, official test quality, model parameters,

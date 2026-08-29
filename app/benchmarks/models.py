@@ -300,7 +300,10 @@ class PerTaskMetrics(BaseModel):
     scores: MetricSummary
     best_score: float | None = None
     worst_score: float | None = None
-    pass_rate: float | None = None
+    perfect_deterministic_score_rate: float | None = Field(default=None, ge=0, le=1)
+    correctness_pass_rate: float | None = Field(default=None, ge=0, le=1)
+    end_to_end_success_rate: float = Field(ge=0, le=1)
+    coverage_adjusted_deterministic_score: float | None = Field(default=None, ge=0, le=100)
 
 
 class LeaderboardEntry(BaseModel):
@@ -313,7 +316,10 @@ class LeaderboardEntry(BaseModel):
     weighted_mean_score: float | None = None
     deterministic_scores: MetricSummary
     coverage: float = Field(ge=0, le=1)
-    pass_rate: float | None = Field(default=None, ge=0, le=1)
+    perfect_deterministic_score_rate: float | None = Field(default=None, ge=0, le=1)
+    correctness_pass_rate: float | None = Field(default=None, ge=0, le=1)
+    end_to_end_success_rate: float = Field(ge=0, le=1)
+    coverage_adjusted_deterministic_score: float | None = Field(default=None, ge=0, le=100)
     successful_generation_rate: float = Field(ge=0, le=1)
     evaluation_completion_rate: float = Field(ge=0, le=1)
     generation_failure_rate: float = Field(ge=0, le=1)
@@ -327,7 +333,10 @@ class LeaderboardEntry(BaseModel):
     mean_generation_latency_ms: float | None = None
     median_generation_latency_ms: float | None = None
     p95_generation_latency_ms: float | None = None
-    mean_evaluation_latency_seconds: float | None = None
+    mean_test_execution_seconds: float | None = None
+    median_test_execution_seconds: float | None = None
+    p95_test_execution_seconds: float | None = None
+    mean_evaluation_lifecycle_seconds: float | None = None
     per_task: list[PerTaskMetrics]
 
 

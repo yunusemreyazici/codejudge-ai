@@ -70,6 +70,17 @@ def _entry(config: BenchmarkModelConfig, samples: list[BenchmarkResultRow]) -> L
         if weighted_denominator > 0
         else None
     )
+    planned_weight = sum(item.task_weight for item in samples)
+    coverage_adjusted_score = (
+        sum(
+            Decimal(str(item.deterministic_score)) * Decimal(str(item.task_weight))
+            for item in evaluated
+            if item.deterministic_score is not None
+        )
+        / Decimal(str(planned_weight))
+        if planned_weight > 0
+        else None
+    )
     generated = [item for item in samples if item.artifact is not None]
     ai_scores = [float(item.ai_score) for item in samples if item.ai_score is not None]
     judge_scores = [float(item.judge_score) for item in samples if item.judge_score is not None]
@@ -83,10 +94,13 @@ def _entry(config: BenchmarkModelConfig, samples: list[BenchmarkResultRow]) -> L
         for item in samples
         if item.generation_latency_ms is not None
     ]
-    evaluation_latencies = [
-        item.evaluation_duration_seconds
+    evaluation_lifecycle_durations = [
+        item.evaluation_lifecycle_seconds
         for item in samples
-        if item.evaluation_duration_seconds is not None
+        if item.evaluation_lifecycle_seconds is not None
+    ]
+    test_execution_durations = [
+        item.test_execution_seconds for item in samples if item.test_execution_seconds is not None
     ]
     costs: dict[str, Decimal] = defaultdict(Decimal)
     for item in samples:
@@ -95,7 +109,12 @@ def _entry(config: BenchmarkModelConfig, samples: list[BenchmarkResultRow]) -> L
     task_groups: dict[str, list[BenchmarkResultRow]] = defaultdict(list)
     for item in samples:
         task_groups[item.task_id].append(item)
-    pass_rate = sum(score == 100 for score in scores) / len(scores) if scores else None
+    perfect_score_rate = sum(score == 100 for score in scores) / len(scores) if scores else None
+    correctness_passes = sum(item.tests_failed == 0 for item in evaluated)
+    end_to_end_successes = sum(
+        item.artifact is not None and item.tests_failed == 0 for item in evaluated
+    )
+    correctness_pass_rate = correctness_passes / len(evaluated) if evaluated else None
     return LeaderboardEntry(
         rank=1,
         model_config_id=config.model_config_id,
@@ -106,7 +125,12 @@ def _entry(config: BenchmarkModelConfig, samples: list[BenchmarkResultRow]) -> L
         weighted_mean_score=weighted_mean,
         deterministic_scores=metric_summary(scores),
         coverage=len(evaluated) / planned if planned else 0,
-        pass_rate=pass_rate,
+        perfect_deterministic_score_rate=perfect_score_rate,
+        correctness_pass_rate=correctness_pass_rate,
+        end_to_end_success_rate=end_to_end_successes / planned if planned else 0,
+        coverage_adjusted_deterministic_score=(
+            float(coverage_adjusted_score) if coverage_adjusted_score is not None else None
+        ),
         successful_generation_rate=len(generated) / planned if planned else 0,
         evaluation_completion_rate=len(evaluated) / len(generated) if generated else 0,
         generation_failure_rate=(
@@ -137,8 +161,17 @@ def _entry(config: BenchmarkModelConfig, samples: list[BenchmarkResultRow]) -> L
             statistics.median(generation_latencies) if generation_latencies else None
         ),
         p95_generation_latency_ms=percentile_95(generation_latencies),
-        mean_evaluation_latency_seconds=(
-            statistics.fmean(evaluation_latencies) if evaluation_latencies else None
+        mean_test_execution_seconds=(
+            statistics.fmean(test_execution_durations) if test_execution_durations else None
+        ),
+        median_test_execution_seconds=(
+            statistics.median(test_execution_durations) if test_execution_durations else None
+        ),
+        p95_test_execution_seconds=percentile_95(test_execution_durations),
+        mean_evaluation_lifecycle_seconds=(
+            statistics.fmean(evaluation_lifecycle_durations)
+            if evaluation_lifecycle_durations
+            else None
         ),
         per_task=[_task_metrics(task_id, task_groups[task_id]) for task_id in sorted(task_groups)],
     )
@@ -148,6 +181,22 @@ def _task_metrics(task_id: str, samples: list[BenchmarkResultRow]) -> PerTaskMet
     scores = [
         float(item.deterministic_score) for item in samples if item.deterministic_score is not None
     ]
+    evaluated = [item for item in samples if item.deterministic_score is not None]
+    correctness_passes = sum(item.tests_failed == 0 for item in evaluated)
+    end_to_end_successes = sum(
+        item.artifact is not None and item.tests_failed == 0 for item in evaluated
+    )
+    weighted_planned = sum(item.task_weight for item in samples)
+    coverage_adjusted = (
+        sum(
+            Decimal(str(item.deterministic_score)) * Decimal(str(item.task_weight))
+            for item in evaluated
+            if item.deterministic_score is not None
+        )
+        / Decimal(str(weighted_planned))
+        if weighted_planned > 0
+        else None
+    )
     return PerTaskMetrics(
         task_id=task_id,
         sample_count=len(samples),
@@ -160,7 +209,14 @@ def _task_metrics(task_id: str, samples: list[BenchmarkResultRow]) -> PerTaskMet
         scores=metric_summary(scores),
         best_score=max(scores) if scores else None,
         worst_score=min(scores) if scores else None,
-        pass_rate=sum(score == 100 for score in scores) / len(scores) if scores else None,
+        perfect_deterministic_score_rate=(
+            sum(score == 100 for score in scores) / len(scores) if scores else None
+        ),
+        correctness_pass_rate=(correctness_passes / len(evaluated) if evaluated else None),
+        end_to_end_success_rate=end_to_end_successes / len(samples) if samples else 0,
+        coverage_adjusted_deterministic_score=(
+            float(coverage_adjusted) if coverage_adjusted is not None else None
+        ),
     )
 
 

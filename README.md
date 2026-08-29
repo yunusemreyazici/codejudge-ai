@@ -513,18 +513,36 @@ determinism, privacy, and interpretation limits.
 
 The primary leaderboard rule is higher weighted mean deterministic score, then higher coverage,
 then higher deterministic median, with the model-configuration fingerprint as the stable final
-tie-breaker. Pass rate means `deterministic score == 100`. Mean, median, sample standard deviation,
-minimum, maximum, per-task metrics, and nearest-rank p95 latency are reported without claiming
-statistical significance from small sample counts.
+tie-breaker. The primary mean applies dataset task weights only to completed evaluations. A
+correctness pass means a completed evaluation whose authoritative official-test result has zero
+failed tests; its denominator is completed evaluations. The separately named perfect deterministic
+score rate means `deterministic score == 100` and must not be interpreted as test correctness.
+Mean, median, sample standard deviation, minimum, maximum, per-task metrics, and nearest-rank p95
+latency are reported without claiming statistical significance from small sample counts.
 
 Score and coverage must be read together. A refusal, provider failure, malformed response, or
 evaluation infrastructure failure has a null deterministic score and is never silently converted
-to zero. AI score, judge score, adversarial robustness, disputes, and AI coverage remain separate
-supplemental columns and never affect rank.
+to zero in the primary mean. Coverage is completed evaluations divided by planned samples;
+successful generation uses planned samples; evaluation completion uses successful generations;
+end-to-end success counts planned samples that generated, evaluated, and passed every official
+correctness test. The coverage-adjusted deterministic score is supplemental: it applies the same
+task weighting over all planned samples and assigns zero only to missing evaluations.
+
+> Coverage-adjusted score is supplemental and intentionally penalizes missing planned evaluations.
+> It must not be confused with the primary successful-evaluation quality score.
+
+Provider generation request latency, sandbox correctness-test execution time, and evaluation
+lifecycle duration are separate measurements. Lifecycle duration runs from benchmark sample
+creation through snapshot completion, so it can include queueing and generation and is never
+presented as code execution time. AI score, judge score, adversarial robustness, disputes, and AI
+coverage remain separate supplemental columns and never affect rank.
 
 Generation pricing is an explicit provider/model/version snapshot. Token usage and calculated cost
 are persisted with the artifact, so later pricing changes cannot rewrite history. Unknown pricing
-is null—not free—and currencies are totaled separately without automatic conversion.
+is null—not free—and currencies are totaled separately without automatic conversion. Cost per
+successful generation and cost per correct evaluation are shown only when the relevant denominator
+is nonzero and recorded generation-cost coverage is complete; otherwise they remain unknown or not
+applicable.
 
 Comparable runs must share the dataset fingerprint, coding-prompt version and hash, deterministic
 evaluator fingerprint, samples per task, and benchmark-policy version. Reproducibility metadata
@@ -553,6 +571,7 @@ curl --fail-with-body -H 'Content-Type: application/json' \
 ```
 
 `GET /api/v1/benchmarks/{run_id}/leaderboard` reports deterministic mean/median, coverage,
+coverage-adjusted score, correctness and end-to-end rates, precisely named test/lifecycle timing,
 per-task scores, separate AI coverage/score, generation latency, token usage, and snapshotted cost.
 The CI fake-model run demonstrates this contract; it is not a real-model performance claim.
 
@@ -681,6 +700,8 @@ handling, Docker daemon boundary, and remaining risks.
 - **Phase 7.1 — Dataset expansion (implemented):** seven rigorous, diverse engineering tasks
 - **Phase 7.2 — Real benchmark workflow (implemented):** safe planning, export, and reporting
 - **Phase 7.3 — Provider-compatible generation (implemented):** explicit output modes and timeouts
+- **Phase 7.4 — Metric semantics and reporting hardening (implemented):** explicit correctness,
+  coverage-adjusted, lifecycle, execution-time, and per-success cost semantics
 - **Phase 8 — Observability + production hardening (planned):** tracing, metrics, and operations
 
 ## Development
@@ -699,9 +720,13 @@ YAML subset that keeps loading on the standard library. Add execution behavior t
 
 ## Testing
 
-The lightweight suite requires no infrastructure. Database tests require an explicitly named
-dedicated database ending in `_test`; Redis tests require an explicit nonzero Redis database.
-Sandbox and worker E2E tests fail rather than skip when `CODEJUDGE_REQUIRE_DOCKER=1`.
+The lightweight suite requires no infrastructure. Destructive database tests resolve only
+`CODEJUDGE_TEST_DATABASE_URL`, require a database name ending in `_test`, and require the explicit
+`CODEJUDGE_ALLOW_DESTRUCTIVE_DATABASE_TESTS=1` opt-in. They never fall back to ambient
+`DATABASE_URL`; migration tests pin the validated test target into Alembic configuration. Set
+`CODEJUDGE_REQUIRE_DATABASE=1` in infrastructure-required runs so missing test configuration fails
+instead of skipping. Redis tests require an explicit nonzero Redis database. Sandbox and worker
+E2E tests fail rather than skip when `CODEJUDGE_REQUIRE_DOCKER=1`.
 
 ```bash
 # Ordinary unit and HTTP integration tests
@@ -710,6 +735,8 @@ uv run pytest -v -m "not sandbox and not database and not queue"
 # PostgreSQL tests (use a dedicated database whose name ends in `_test`)
 docker compose exec postgres createdb -U codejudge codejudge_test
 export CODEJUDGE_TEST_DATABASE_URL=postgresql+asyncpg://codejudge:codejudge@127.0.0.1:5432/codejudge_test
+export CODEJUDGE_ALLOW_DESTRUCTIVE_DATABASE_TESTS=1
+export CODEJUDGE_REQUIRE_DATABASE=1
 DATABASE_URL="$CODEJUDGE_TEST_DATABASE_URL" uv run alembic upgrade head
 uv run pytest -v -m database tests/database
 
@@ -731,8 +758,14 @@ CODEJUDGE_REQUIRE_DOCKER=1 uv run pytest -v tests/queue/test_worker_e2e.py
 # Phase 7 fake-model + PostgreSQL + Redis + real Docker benchmark flow
 CODEJUDGE_REQUIRE_DOCKER=1 uv run pytest -v tests/queue/test_benchmark_worker_e2e.py
 
-# Authoritative full verification with all services configured
-CODEJUDGE_REQUIRE_DOCKER=1 uv run pytest -v
+# Authoritative full verification with all services configured. DATABASE_URL is intentionally
+# unnecessary here: destructive tests use only the validated dedicated test setting.
+CODEJUDGE_TEST_DATABASE_URL=postgresql+asyncpg://codejudge:codejudge@127.0.0.1:5432/codejudge_test \
+CODEJUDGE_ALLOW_DESTRUCTIVE_DATABASE_TESTS=1 \
+CODEJUDGE_REQUIRE_DATABASE=1 \
+CODEJUDGE_TEST_REDIS_URL=redis://127.0.0.1:6379/15 \
+CODEJUDGE_REQUIRE_DOCKER=1 \
+uv run pytest -v
 ```
 
 Docker tests verify successful and failing submissions, syntax errors, timeout, cleanup, network

@@ -37,6 +37,8 @@ jobs:
       DATABASE_URL: postgresql+asyncpg://codejudge:codejudge@127.0.0.1:5432/codejudge_test
       CODEJUDGE_TEST_DATABASE_URL: postgresql+asyncpg://codejudge:codejudge@127.0.0.1:5432/codejudge_test
       CODEJUDGE_TEST_REDIS_URL: redis://127.0.0.1:6379/15
+      CODEJUDGE_ALLOW_DESTRUCTIVE_DATABASE_TESTS: "1"
+      CODEJUDGE_REQUIRE_DATABASE: "1"
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -130,6 +132,8 @@ jobs:
       CODEJUDGE_TEST_DATABASE_URL: postgresql+asyncpg://codejudge:codejudge@127.0.0.1:5432/codejudge_test
       CODEJUDGE_TEST_REDIS_URL: redis://127.0.0.1:6379/15
       CODEJUDGE_REQUIRE_DOCKER: "1"
+      CODEJUDGE_ALLOW_DESTRUCTIVE_DATABASE_TESTS: "1"
+      CODEJUDGE_REQUIRE_DATABASE: "1"
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -182,6 +186,8 @@ jobs:
       CODEJUDGE_TEST_DATABASE_URL: postgresql+asyncpg://codejudge:codejudge@127.0.0.1:5432/codejudge_test
       CODEJUDGE_TEST_REDIS_URL: redis://127.0.0.1:6379/15
       CODEJUDGE_REQUIRE_DOCKER: "1"
+      CODEJUDGE_ALLOW_DESTRUCTIVE_DATABASE_TESTS: "1"
+      CODEJUDGE_REQUIRE_DATABASE: "1"
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -239,6 +245,8 @@ jobs:
       CODEJUDGE_TEST_DATABASE_URL: postgresql+asyncpg://codejudge:codejudge@127.0.0.1:5432/codejudge_test
       CODEJUDGE_TEST_REDIS_URL: redis://127.0.0.1:6379/15
       CODEJUDGE_REQUIRE_DOCKER: "1"
+      CODEJUDGE_ALLOW_DESTRUCTIVE_DATABASE_TESTS: "1"
+      CODEJUDGE_REQUIRE_DATABASE: "1"
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

@@ -53,6 +53,10 @@ class BenchmarkResultRow:
     judge_score: float | None
     adversarial_robustness: float | None
     ai_status: str | None
+    tests_passed: int | None = None
+    tests_failed: int | None = None
+    test_execution_seconds: float | None = None
+    evaluation_lifecycle_seconds: float | None = None
 
     @property
     def benchmark_sample_id(self) -> UUID:
@@ -273,6 +277,10 @@ class SqlAlchemyBenchmarkRepository:
                 EvaluationRecord.judge_score,
                 EvaluationRecord.adversarial_robustness,
                 EvaluationRecord.ai_status,
+                EvaluationRecord.tests_passed,
+                EvaluationRecord.tests_failed,
+                EvaluationRecord.test_duration_seconds,
+                EvaluationRecord.duration_seconds,
             )
             .join(
                 BenchmarkModelConfigRecord,
@@ -317,6 +325,10 @@ class SqlAlchemyBenchmarkRepository:
                 judge_score=row[5],
                 adversarial_robustness=row[6],
                 ai_status=row[7],
+                tests_passed=row[8],
+                tests_failed=row[9],
+                test_execution_seconds=row[10],
+                evaluation_lifecycle_seconds=row[11],
             )
             for row in rows
         ]

@@ -8,8 +8,16 @@ from sqlalchemy import text
 
 from tests.database.conftest import DatabaseHarness
 from tests.database.helpers import snapshot_fixture
+from tests.database.safety import safe_alembic_config
 
 pytestmark = pytest.mark.database
+
+
+def _migration_config(database_harness: DatabaseHarness) -> Config:
+    return safe_alembic_config(
+        database_harness.target,
+        str(Path(__file__).parents[2] / "alembic.ini"),
+    )
 
 
 async def test_database_was_created_by_current_migration_head(
@@ -36,7 +44,7 @@ async def test_phase4_through_phase7_downgrade_upgrade_preserves_snapshot(
 ) -> None:
     snapshot = snapshot_fixture()
     await database_harness.repository.create(snapshot)
-    config = Config(str(Path(__file__).parents[2] / "alembic.ini"))
+    config = _migration_config(database_harness)
 
     await asyncio.to_thread(command.downgrade, config, "20260827_0001")
     async with database_harness.database.engine.connect() as connection:
@@ -60,7 +68,7 @@ async def test_phase5_to_phase6_upgrade_preserves_existing_snapshot(
 ) -> None:
     snapshot = snapshot_fixture()
     await database_harness.repository.create(snapshot)
-    config = Config(str(Path(__file__).parents[2] / "alembic.ini"))
+    config = _migration_config(database_harness)
 
     await asyncio.to_thread(command.downgrade, config, "20260827_0002")
     async with database_harness.database.engine.connect() as connection:
@@ -83,7 +91,7 @@ async def test_phase6_to_phase7_upgrade_preserves_existing_snapshot(
 ) -> None:
     snapshot = snapshot_fixture()
     await database_harness.repository.create(snapshot)
-    config = Config(str(Path(__file__).parents[2] / "alembic.ini"))
+    config = _migration_config(database_harness)
 
     await asyncio.to_thread(command.downgrade, config, "20260827_0003")
     async with database_harness.database.engine.connect() as connection:

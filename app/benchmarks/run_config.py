@@ -1,4 +1,4 @@
-"""Commit-safe Phase 7.3 benchmark configuration and cost preflight."""
+"""Commit-safe benchmark configuration and cost preflight."""
 
 from __future__ import annotations
 

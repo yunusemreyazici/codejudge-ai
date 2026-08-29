@@ -7,7 +7,7 @@ import json
 import os
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
@@ -87,15 +87,18 @@ class BenchmarkExporter:
                 snapshots[row.sample.evaluation_id] = snapshot
             candidate_path = self._verified_candidate(row, snapshot, candidates)
             sample_documents.append(_sample_document(row, snapshot, candidate_path))
+        metric_rows = [
+            _row_with_snapshot_metrics(row, snapshots.get(row.sample.evaluation_id)) for row in rows
+        ]
         meaningful_results = bool(snapshots)
         ai_enabled = _ai_enabled(snapshots.values())
         leaderboard = (
             []
             if run.status is BenchmarkRunStatus.FAILED or not meaningful_results
-            else build_leaderboard(run.model_configs, rows)
+            else build_leaderboard(run.model_configs, metric_rows)
         )
         document: dict[str, Any] = {
-            "schema_version": "1",
+            "schema_version": "2",
             "run": {
                 "benchmark_run_id": run.benchmark_run_id,
                 "status": run.status,
@@ -138,12 +141,49 @@ class BenchmarkExporter:
                     ),
                 },
             },
-            "models": [_model_document(config, rows) for config in run.model_configs],
+            "metric_semantics": {
+                "weighted_mean_score": (
+                    "Task-weighted mean deterministic score over completed evaluations only; "
+                    "this remains the primary ranking metric."
+                ),
+                "coverage": "Completed evaluations divided by all planned samples.",
+                "successful_generation_rate": (
+                    "Samples with persisted generation artifacts divided by all planned samples."
+                ),
+                "evaluation_completion_rate": (
+                    "Completed evaluations divided by successful generations."
+                ),
+                "correctness_pass_rate": (
+                    "Completed evaluations with zero failed official correctness tests divided "
+                    "by completed evaluations."
+                ),
+                "end_to_end_success_rate": (
+                    "Samples with a persisted generation, completed evaluation, and zero failed "
+                    "official correctness tests divided by all planned samples."
+                ),
+                "perfect_deterministic_score_rate": (
+                    "Completed evaluations with total deterministic score exactly 100 divided "
+                    "by completed evaluations."
+                ),
+                "coverage_adjusted_deterministic_score": (
+                    "Supplemental task-weighted mean over all planned samples, assigning zero "
+                    "only to missing evaluations. Primary ranking is unchanged."
+                ),
+                "generation_latency": "Provider generation request latency.",
+                "test_execution_duration": (
+                    "Authoritative sandbox correctness-test duration from evaluation.tests."
+                ),
+                "evaluation_lifecycle_duration": (
+                    "Wall-clock time from benchmark sample creation to evaluation snapshot "
+                    "completion; includes queueing and generation."
+                ),
+            },
+            "models": [_model_document(config, metric_rows) for config in run.model_configs],
             "samples": sample_documents,
             "per_task": _per_task_documents(leaderboard),
             "leaderboard": [entry.model_dump(mode="json") for entry in leaderboard],
             "failures": _failure_documents(rows),
-            "totals": _totals(rows),
+            "totals": _totals(metric_rows),
             "disclaimer": (
                 "These results apply to the exact dataset, prompts, parameters, provider "
                 "backends, evaluator configuration, and sample count recorded in this benchmark "
@@ -340,8 +380,9 @@ def _sample_document(
                 "tests": snapshot.tests.model_dump(mode="json"),
                 "oom_killed": snapshot.oom_killed,
                 "ai_assessment": _ai_assessment_document(snapshot),
-                "duration_seconds": snapshot.duration_seconds,
-                "benchmark_total_duration_seconds": row.sample.total_duration_seconds,
+                "test_execution_seconds": snapshot.tests.duration_seconds,
+                "evaluation_lifecycle_seconds": snapshot.duration_seconds,
+                "benchmark_worker_total_duration_seconds": row.sample.total_duration_seconds,
                 "reproducibility_fingerprint": snapshot.reproducibility_fingerprint,
                 "execution": snapshot.execution.model_dump(mode="json"),
                 "codejudge_version": snapshot.codejudge_version,
@@ -377,6 +418,8 @@ def _model_document(config: Any, rows: list[BenchmarkResultRow]) -> dict[str, An
     selected = [row for row in rows if row.config.model_config_id == config.model_config_id]
     generated = [row for row in selected if row.artifact is not None]
     evaluated = [row for row in selected if row.deterministic_score is not None]
+    correct = [row for row in evaluated if row.tests_failed == 0]
+    end_to_end_successes = [row for row in correct if row.artifact is not None]
     failures: dict[str, int] = {}
     for row in selected:
         if row.sample.failure_code:
@@ -403,11 +446,27 @@ def _model_document(config: Any, rows: list[BenchmarkResultRow]) -> dict[str, An
     latencies = [
         row.artifact.generation_latency_ms for row in generated if row.artifact is not None
     ]
-    evaluation_latencies = [
-        row.sample.evaluation_duration_seconds
-        for row in selected
-        if row.sample.evaluation_duration_seconds is not None
+    test_execution_durations = [
+        row.test_execution_seconds for row in selected if row.test_execution_seconds is not None
     ]
+    evaluation_lifecycle_durations = [
+        row.evaluation_lifecycle_seconds
+        for row in selected
+        if row.evaluation_lifecycle_seconds is not None
+    ]
+    complete_cost_coverage = samples_with_cost == len(generated) and bool(generated)
+    cost_per_successful_generation, generation_cost_status = _per_unit_cost(
+        costs,
+        denominator=len(generated),
+        complete_coverage=complete_cost_coverage,
+        empty_status="not_applicable_no_successful_generation",
+    )
+    cost_per_correct_evaluation, correct_cost_status = _per_unit_cost(
+        costs,
+        denominator=len(correct),
+        complete_coverage=complete_cost_coverage,
+        empty_status="not_applicable_no_correct_evaluation",
+    )
     pricing = None if config.pricing is None else config.pricing.model_dump(mode="json")
     return {
         "model_config_id": config.model_config_id,
@@ -428,6 +487,8 @@ def _model_document(config: Any, rows: list[BenchmarkResultRow]) -> dict[str, An
         "planned_samples": len(selected),
         "successful_generations": len(generated),
         "completed_evaluations": len(evaluated),
+        "correct_evaluations": len(correct),
+        "end_to_end_successful_samples": len(end_to_end_successes),
         "generation_failures": sum(
             row.sample.status is BenchmarkSampleStatus.GENERATION_FAILED for row in selected
         ),
@@ -438,13 +499,32 @@ def _model_document(config: Any, rows: list[BenchmarkResultRow]) -> dict[str, An
         "token_usage": tokens,
         "actual_generation_costs": dict(sorted(costs.items())),
         "samples_with_cost": samples_with_cost,
-        "latency": {
-            "mean_generation_ms": _mean(latencies),
-            "median_generation_ms": _median(latencies),
-            "p95_generation_ms": _p95(latencies),
-            "mean_evaluation_seconds": _mean(evaluation_latencies),
-        },
+        "cost_per_successful_generation": cost_per_successful_generation,
+        "cost_per_successful_generation_status": generation_cost_status,
+        "cost_per_correct_evaluation": cost_per_correct_evaluation,
+        "cost_per_correct_evaluation_status": correct_cost_status,
+        "mean_generation_latency_ms": _mean(latencies),
+        "median_generation_latency_ms": _median(latencies),
+        "p95_generation_latency_ms": _p95(latencies),
+        "mean_test_execution_seconds": _mean(test_execution_durations),
+        "median_test_execution_seconds": _median(test_execution_durations),
+        "p95_test_execution_seconds": _p95(test_execution_durations),
+        "mean_evaluation_lifecycle_seconds": _mean(evaluation_lifecycle_durations),
     }
+
+
+def _row_with_snapshot_metrics(
+    row: BenchmarkResultRow, snapshot: EvaluationSnapshot | None
+) -> BenchmarkResultRow:
+    if snapshot is None:
+        return row
+    return replace(
+        row,
+        tests_passed=snapshot.tests.passed,
+        tests_failed=snapshot.tests.failed,
+        test_execution_seconds=snapshot.tests.duration_seconds,
+        evaluation_lifecycle_seconds=snapshot.duration_seconds,
+    )
 
 
 def _evaluation_identities(snapshots: Any) -> list[dict[str, Any]]:
@@ -496,7 +576,12 @@ def _per_task_documents(leaderboard: list[Any]) -> list[dict[str, Any]]:
                     "model_configuration_fingerprint": entry.model_configuration_fingerprint,
                     "samples": task.sample_count,
                     "mean_deterministic_score": task.scores.mean,
-                    "pass_rate": task.pass_rate,
+                    "coverage_adjusted_deterministic_score": (
+                        task.coverage_adjusted_deterministic_score
+                    ),
+                    "correctness_pass_rate": task.correctness_pass_rate,
+                    "end_to_end_success_rate": task.end_to_end_success_rate,
+                    "perfect_deterministic_score_rate": (task.perfect_deterministic_score_rate),
                     "generation_failures": task.generation_failures,
                     "evaluation_failures": task.evaluation_failures,
                 }
@@ -540,6 +625,9 @@ def _totals(rows: list[BenchmarkResultRow]) -> dict[str, Any]:
             row.sample.failure_code in {"malformed_output", "malformed_provider_response"}
             for row in rows
         ),
+        "provider_unavailable": sum(
+            row.sample.failure_code == "provider_unavailable" for row in rows
+        ),
     }
 
 
@@ -547,33 +635,39 @@ def _leaderboard_section(entries: list[dict[str, Any]], models: list[dict[str, A
     lines = [
         "## Leaderboard",
         "",
-        "Primary ranking uses only the weighted deterministic mean.",
+        "Primary ranking uses the task-weighted deterministic mean over completed evaluations "
+        "only. It measures generated-sample quality; coverage must be interpreted alongside it.",
         "",
-        "| Rank | Model | Weighted deterministic mean | Median | Coverage | Pass rate | "
-        "Generation failure rate |",
+        "| Rank | Model | Deterministic mean | Coverage | Coverage-adjusted score | "
+        "Correctness pass | End-to-end success |",
         "| ---: | --- | ---: | ---: | ---: | ---: | ---: |",
     ]
     for entry in entries:
         lines.append(
             (
-                "| {rank} | {model} | {mean} | {median} | {coverage} | {pass_rate} | {failures} |"
+                "| {rank} | {model} | {mean} | {coverage} | {adjusted} | {correctness} | "
+                "{end_to_end} |"
             ).format(
                 rank=entry["rank"],
                 model=_cell(entry["display_name"]),
                 mean=_number(entry["weighted_mean_score"]),
-                median=_number(entry["deterministic_scores"]["median"]),
                 coverage=_percent(entry["coverage"]),
-                pass_rate=_percent(entry["pass_rate"]),
-                failures=_percent(entry["generation_failure_rate"]),
+                adjusted=_number(entry["coverage_adjusted_deterministic_score"]),
+                correctness=_percent(entry["correctness_pass_rate"]),
+                end_to_end=_percent(entry["end_to_end_success_rate"]),
             )
         )
     lines.extend(
         [
             "",
+            "Coverage-adjusted deterministic score is supplemental and assigns zero to missing "
+            "planned evaluations. It does not replace the primary ranking.",
+            "",
             "### Supplemental metrics",
             "",
-            "| Model | AI score | AI coverage | Generation cost | Mean generation latency |",
-            "| --- | ---: | ---: | --- | ---: |",
+            "| Model | Deterministic median | Perfect deterministic score | AI score | "
+            "AI coverage | Generation cost |",
+            "| --- | ---: | ---: | ---: | ---: | --- |",
         ]
     )
     models_by_id = {str(model["model_config_id"]): model for model in models}
@@ -583,9 +677,11 @@ def _leaderboard_section(entries: list[dict[str, Any]], models: list[dict[str, A
         cost_coverage = model["samples_with_cost"] / generated if generated else 0
         costs = _costs(entry["generation_costs"], cost_coverage)
         lines.append(
-            f"| {_cell(entry['display_name'])} | {_number(entry['mean_ai_score'])} | "
-            f"{_percent(entry['ai_coverage'])} | {costs} | "
-            f"{_milliseconds(entry['mean_generation_latency_ms'])} |"
+            f"| {_cell(entry['display_name'])} | "
+            f"{_number(entry['deterministic_scores']['median'])} | "
+            f"{_percent(entry['perfect_deterministic_score_rate'])} | "
+            f"{_number(entry['mean_ai_score'])} | "
+            f"{_percent(entry['ai_coverage'])} | {costs} |"
         )
     return [*lines, ""]
 
@@ -594,15 +690,18 @@ def _per_task_section(rows: list[dict[str, Any]]) -> list[str]:
     lines = [
         "## Per-Task Results",
         "",
-        "| Task | Model | Samples | Mean deterministic score | Pass rate | Generation failures | "
-        "Evaluation failures |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+        "| Task | Model | Samples | Deterministic mean | Coverage-adjusted score | "
+        "Correctness pass | End-to-end success | Perfect deterministic score |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:
         lines.append(
             f"| {_cell(row['task_id'])} | {_cell(row['model'])} | {row['samples']} | "
-            f"{_number(row['mean_deterministic_score'])} | {_percent(row['pass_rate'])} | "
-            f"{row['generation_failures']} | {row['evaluation_failures']} |"
+            f"{_number(row['mean_deterministic_score'])} | "
+            f"{_number(row['coverage_adjusted_deterministic_score'])} | "
+            f"{_percent(row['correctness_pass_rate'])} | "
+            f"{_percent(row['end_to_end_success_rate'])} | "
+            f"{_percent(row['perfect_deterministic_score_rate'])} |"
         )
     return [*lines, ""]
 
@@ -611,9 +710,14 @@ def _reliability_section(models: list[dict[str, Any]]) -> list[str]:
     lines = [
         "## Reliability / Coverage",
         "",
-        "| Model | Successful generation | Evaluation completion | Refusals | Timeouts | "
-        "Rate limits | Malformed |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "Successful generation uses planned samples as its denominator; evaluation completion "
+        "uses successful generations; correctness pass uses completed evaluations; end-to-end "
+        "success uses planned samples.",
+        "",
+        "| Model | Successful generation | Evaluation completion | Correctness pass | "
+        "End-to-end success | Generation failures | Refusals | Timeouts | Rate limits | "
+        "Malformed | Provider unavailable |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for model in models:
         planned = model["planned_samples"]
@@ -627,9 +731,12 @@ def _reliability_section(models: list[dict[str, Any]]) -> list[str]:
             f"| {_cell(model['display_name'])} | "
             f"{_percent(generated / planned if planned else 0)} | "
             f"{_percent(completed / generated if generated else 0)} | "
+            f"{_percent(model['correct_evaluations'] / completed if completed else None)} | "
+            f"{_percent(model['end_to_end_successful_samples'] / planned if planned else 0)} | "
+            f"{model['generation_failures']} | "
             f"{failures.get('provider_refusal', 0)} | {failures.get('provider_timeout', 0)} | "
             f"{failures.get('provider_rate_limited', 0)} | "
-            f"{malformed} |"
+            f"{malformed} | {failures.get('provider_unavailable', 0)} |"
         )
     return [*lines, ""]
 
@@ -640,19 +747,29 @@ def _cost_section(models: list[dict[str, Any]], evaluator: dict[str, Any]) -> li
         "",
         "All values below are actual recorded usage, not preflight estimates.",
         "",
-        "| Model | Input tokens | Output tokens | Generation cost | Cost coverage |",
-        "| --- | ---: | ---: | --- | ---: |",
+        "| Model | Input tokens | Output tokens | Generation cost | Cost coverage | "
+        "Cost / successful generation | Cost / correct evaluation |",
+        "| --- | ---: | ---: | --- | ---: | --- | --- |",
     ]
     for model in models:
         tokens = model["token_usage"]
         generated = model["successful_generations"]
         costs = model["actual_generation_costs"]
+        cost_per_generation = _cost_metric(
+            model["cost_per_successful_generation"],
+            model["cost_per_successful_generation_status"],
+        )
+        cost_per_correct = _cost_metric(
+            model["cost_per_correct_evaluation"],
+            model["cost_per_correct_evaluation_status"],
+        )
         lines.append(
             f"| {_cell(model['display_name'])} | "
             f"{_known(tokens['input'], tokens['samples_with_usage'], generated)} | "
             f"{_known(tokens['output'], tokens['samples_with_usage'], generated)} | "
             f"{_costs(costs, model['samples_with_cost'] / generated if generated else 0)} | "
-            f"{_percent(model['samples_with_cost'] / generated if generated else 0)} |"
+            f"{_percent(model['samples_with_cost'] / generated if generated else 0)} | "
+            f"{cost_per_generation} | {cost_per_correct} |"
         )
     if evaluator["ai_enabled"]:
         ai_cost = (
@@ -670,18 +787,22 @@ def _latency_section(models: list[dict[str, Any]]) -> list[str]:
     lines = [
         "## Latency",
         "",
-        "Provider generation latency and Docker evaluation duration are reported separately.",
+        "Provider generation latency, authoritative sandbox correctness-test execution, and "
+        "benchmark evaluation lifecycle time are reported separately. Lifecycle time begins at "
+        "sample creation and includes queueing and generation; it is not code execution time.",
         "",
-        "| Model | Mean generation | Median generation | p95 generation | Mean evaluation |",
-        "| --- | ---: | ---: | ---: | ---: |",
+        "| Model | Generation median | Generation p95 | Test execution mean | Test execution p95 | "
+        "Evaluation lifecycle mean |",
+        "| --- | ---: | ---: | ---: | ---: | ---: |",
     ]
     for model in models:
-        latency = model["latency"]
         lines.append(
-            f"| {_cell(model['display_name'])} | {_milliseconds(latency['mean_generation_ms'])} | "
-            f"{_milliseconds(latency['median_generation_ms'])} | "
-            f"{_milliseconds(latency['p95_generation_ms'])} | "
-            f"{_seconds(latency['mean_evaluation_seconds'])} |"
+            f"| {_cell(model['display_name'])} | "
+            f"{_milliseconds(model['median_generation_latency_ms'])} | "
+            f"{_milliseconds(model['p95_generation_latency_ms'])} | "
+            f"{_seconds(model['mean_test_execution_seconds'])} | "
+            f"{_seconds(model['p95_test_execution_seconds'])} | "
+            f"{_seconds(model['mean_evaluation_lifecycle_seconds'])} |"
         )
     return [*lines, ""]
 
@@ -802,6 +923,28 @@ def _known_sum(values: list[int | None]) -> int | None:
     return sum(known) if known else None
 
 
+def _per_unit_cost(
+    costs: dict[str, Decimal],
+    *,
+    denominator: int,
+    complete_coverage: bool,
+    empty_status: str,
+) -> tuple[dict[str, Decimal] | None, str]:
+    if denominator == 0:
+        return None, empty_status
+    if not complete_coverage:
+        return None, "unknown_incomplete_cost_coverage"
+    unit = Decimal(denominator)
+    precision = Decimal("0.000000000001")
+    return (
+        {
+            currency: (amount / unit).quantize(precision)
+            for currency, amount in sorted(costs.items())
+        },
+        "available",
+    )
+
+
 def _mean(values: Sequence[float | int]) -> float | None:
     return sum(values) / len(values) if values else None
 
@@ -852,6 +995,14 @@ def _costs(costs: dict[str, Any], coverage: float | int) -> str:
             else ", ".join(f"{key} {value} (partial)" for key, value in sorted(costs.items()))
         )
     return ", ".join(f"{key} {value}" for key, value in sorted(costs.items()))
+
+
+def _cost_metric(costs: dict[str, Any] | None, status: str) -> str:
+    if costs is not None:
+        return ", ".join(f"{key} {value}" for key, value in sorted(costs.items()))
+    if status.startswith("not_applicable"):
+        return "not applicable"
+    return "unknown"
 
 
 def _known(value: object, coverage: int, total: int) -> str:

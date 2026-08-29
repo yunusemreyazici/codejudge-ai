@@ -7,16 +7,23 @@ from dataclasses import dataclass
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
-from sqlalchemy.engine import make_url
 
 from app.benchmarks.repositories import SqlAlchemyBenchmarkRepository
 from app.db.repositories import SqlAlchemyEvaluationRepository
 from app.db.session import Database
 from app.jobs.repositories import SqlAlchemyEvaluationJobRepository
+from tests.database.safety import (
+    REQUIRE_DATABASE_TESTS_ENV,
+    DestructiveDatabaseOptInError,
+    MissingTestDatabaseConfigurationError,
+    SafeTestDatabaseTarget,
+    resolve_safe_test_database,
+)
 
 
 @dataclass(frozen=True, slots=True)
 class DatabaseHarness:
+    target: SafeTestDatabaseTarget
     database: Database
     repository: SqlAlchemyEvaluationRepository
     job_repository: SqlAlchemyEvaluationJobRepository
@@ -37,18 +44,19 @@ evaluations
 
 @pytest_asyncio.fixture
 async def database_harness() -> AsyncIterator[DatabaseHarness]:
-    database_url = os.getenv("CODEJUDGE_TEST_DATABASE_URL", "").strip()
-    if not database_url:
-        pytest.skip("CODEJUDGE_TEST_DATABASE_URL is not configured")
-    parsed = make_url(database_url)
-    if parsed.drivername != "postgresql+asyncpg" or not (parsed.database or "").endswith("_test"):
-        raise RuntimeError("Database tests require a dedicated postgresql+asyncpg *_test database")
+    try:
+        target = resolve_safe_test_database()
+    except (MissingTestDatabaseConfigurationError, DestructiveDatabaseOptInError) as error:
+        if os.getenv(REQUIRE_DATABASE_TESTS_ENV, "").strip() == "1":
+            pytest.fail(str(error), pytrace=False)
+        pytest.skip(str(error))
 
-    database = Database(database_url)
+    database = Database(target.url)
     async with database.engine.begin() as connection:
         await connection.execute(text(TRUNCATE_ALL))
     try:
         yield DatabaseHarness(
+            target=target,
             database=database,
             repository=SqlAlchemyEvaluationRepository(database.session_factory),
             job_repository=SqlAlchemyEvaluationJobRepository(database.session_factory),

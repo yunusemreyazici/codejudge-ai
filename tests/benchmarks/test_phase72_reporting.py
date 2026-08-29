@@ -63,6 +63,9 @@ def _fixture() -> tuple[BenchmarkRun, list[BenchmarkResultRow], dict[UUID, objec
     completed = _row(good, completed_id, BenchmarkSampleStatus.COMPLETED, source=SOURCE)
     refused = _row(refusal, uuid4(), BenchmarkSampleStatus.GENERATION_FAILED)
     snapshot = snapshot_fixture(source=SOURCE, evaluation_id=completed_id, created_at=NOW)
+    snapshot = snapshot.model_copy(
+        update={"tests": snapshot.tests.model_copy(update={"passed": 8, "failed": 0, "total": 8})}
+    )
     completed = BenchmarkResultRow(
         sample=completed.sample.model_copy(
             update={
@@ -208,6 +211,7 @@ async def test_export_is_deterministic_auditable_and_report_is_structural(tmp_pa
     assert first.results_bytes == second.results_bytes
     assert first.results_sha256 == hashlib.sha256(first.results_bytes).hexdigest()
     assert first.document["dataset"]["fingerprint"] == run.dataset_fingerprint
+    assert first.document["schema_version"] == "2"
     assert first.document["models"][0]["model_configuration_fingerprint"]
     assert first.document["totals"]["provider_refusals"] == 1
     assert first.document["models"][1]["actual_generation_costs"] == {}
@@ -215,12 +219,30 @@ async def test_export_is_deterministic_auditable_and_report_is_structural(tmp_pa
     assert first.document["evaluator"]["ai_cost"]["status"] == "not_applicable"
     assert first.document["samples"][0]["evaluation"]["score_breakdown"]["correctness"] == 75
     assert first.document["samples"][0]["evaluation"]["tests"]["total"] == 8
+    assert first.document["samples"][0]["evaluation"]["test_execution_seconds"] == 0.4
+    assert first.document["samples"][0]["evaluation"]["evaluation_lifecycle_seconds"] == 0.75
+    assert "duration_seconds" not in first.document["samples"][0]["evaluation"]
+    good_metrics = first.document["leaderboard"][0]
+    assert good_metrics["correctness_pass_rate"] == 1
+    assert good_metrics["end_to_end_success_rate"] == 1
+    assert good_metrics["perfect_deterministic_score_rate"] == 0
+    assert good_metrics["mean_test_execution_seconds"] == 0.4
+    assert good_metrics["mean_evaluation_lifecycle_seconds"] == 0.75
+    assert first.document["models"][0]["cost_per_successful_generation"] == {
+        "USD": Decimal("0.000180000000")
+    }
+    assert first.document["models"][0]["cost_per_correct_evaluation"] == {
+        "USD": Decimal("0.000180000000")
+    }
     assert "These results apply to the exact dataset" in report
     assert "unknown" in report
     assert "Failures & Refusals" in report
     assert "Per-Task Results" in report
     assert first.results_sha256 in report
     assert "AI score" in report
+    assert "Coverage-adjusted score" in report
+    assert "Correctness pass" in report
+    assert "Evaluation lifecycle mean" in report
     assert "provider_refusal" in report
     assert "mixes generation output modes" in report
 
