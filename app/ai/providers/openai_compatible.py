@@ -137,13 +137,15 @@ class OpenAICompatibleProvider:
         try:
             payload: object = json.loads(payload_bytes)
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise ProviderError("malformed_provider_response") from error
+            raise ProviderError(
+                "malformed_provider_response", detail_code="malformed_json"
+            ) from error
         if not isinstance(payload, dict):
-            raise ProviderError("malformed_provider_response")
+            raise ProviderError("malformed_provider_response", detail_code="unsupported_root_type")
         completion, envelope_type = _normalize_completion(payload)
         choices = completion["choices"]
         first_choice = choices[0]
-        content = _response_content(completion)
+        content, content_type = _response_content(completion)
         usage_raw = completion.get("usage")
         usage = usage_raw if isinstance(usage_raw, dict) else {}
         response_id = _first_string(completion.get("id"), payload.get("id"))
@@ -165,7 +167,7 @@ class OpenAICompatibleProvider:
                     if isinstance(first_choice.get("finish_reason"), str)
                     else None
                 ),
-                content_type="string",
+                content_type=content_type,
                 content_length=len(content.encode("utf-8")),
                 usage_present=isinstance(usage_raw, dict),
                 provider_response_model=response_model,
@@ -195,26 +197,74 @@ def _normalize_completion(
         envelope_type = "root"
     else:
         data = payload.get("data")
-        if not isinstance(data, dict) or not isinstance(data.get("choices"), list):
-            raise ProviderError("malformed_provider_response")
+        if not isinstance(data, dict):
+            detail_code = "missing_choices" if "choices" not in payload else "invalid_choices_type"
+            raise ProviderError("malformed_provider_response", detail_code=detail_code)
+        data_choices = data.get("choices")
+        if not isinstance(data_choices, list):
+            detail_code = "missing_choices" if "choices" not in data else "invalid_choices_type"
+            raise ProviderError("malformed_provider_response", detail_code=detail_code)
         completion = data
         envelope_type = "data-wrapper"
-        choices = data["choices"]
-    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-        raise ProviderError("malformed_provider_response")
+        choices = data_choices
+    if not choices:
+        raise ProviderError("malformed_provider_response", detail_code="empty_choices")
+    if not isinstance(choices[0], dict):
+        raise ProviderError("malformed_provider_response", detail_code="invalid_choice")
     return completion, envelope_type
 
 
-def _response_content(completion: dict[str, Any]) -> str:
+def _response_content(completion: dict[str, Any]) -> tuple[str, str]:
     choices = completion["choices"]
-    message = choices[0].get("message")
+    choice = choices[0]
+    message = choice.get("message")
     if not isinstance(message, dict):
-        raise ProviderError("malformed_provider_response")
+        detail_code = "missing_message" if "message" not in choice else "invalid_message_type"
+        raise ProviderError("malformed_provider_response", detail_code=detail_code)
+    return _extract_assistant_text(message)
+
+
+def _extract_assistant_text(message: dict[str, Any]) -> tuple[str, str]:
+    """Extract only recognized final assistant text without exposing reasoning or tool data."""
+    content_present = "content" in message
     content = message.get("content")
-    if not isinstance(content, str):
-        code = "provider_refusal" if message.get("refusal") else "malformed_provider_response"
-        raise ProviderError(code)
-    return content
+    if isinstance(content, str):
+        if content == "":
+            raise ProviderError("malformed_provider_response", detail_code="empty_content")
+        return content, "string"
+    if isinstance(content, list):
+        if not content:
+            raise ProviderError("malformed_provider_response", detail_code="empty_content")
+        text_parts: list[str] = []
+        for part in content:
+            if not isinstance(part, dict):
+                raise ProviderError(
+                    "malformed_provider_response", detail_code="unsupported_content_type"
+                )
+            part_type = part.get("type")
+            if part_type == "refusal":
+                raise ProviderError("provider_refusal", detail_code="refusal")
+            if part_type not in {"text", "output_text"} or not isinstance(part.get("text"), str):
+                raise ProviderError(
+                    "malformed_provider_response", detail_code="unsupported_content_type"
+                )
+            text_parts.append(part["text"])
+        text = "".join(text_parts)
+        if text == "":
+            raise ProviderError("malformed_provider_response", detail_code="empty_content")
+        return text, "text-parts"
+    refusal = message.get("refusal")
+    if isinstance(refusal, str):
+        raise ProviderError("provider_refusal", detail_code="refusal")
+    if message.get("tool_calls") is not None or message.get("function_call") is not None:
+        raise ProviderError("malformed_provider_response", detail_code="tool_call_only")
+    if any(key in message for key in ("reasoning", "reasoning_content", "reasoning_details")):
+        raise ProviderError("malformed_provider_response", detail_code="reasoning_only")
+    if not content_present:
+        raise ProviderError("malformed_provider_response", detail_code="missing_content")
+    if content is None:
+        raise ProviderError("malformed_provider_response", detail_code="null_content")
+    raise ProviderError("malformed_provider_response", detail_code="unsupported_content_type")
 
 
 def _first_string(*values: object) -> str | None:

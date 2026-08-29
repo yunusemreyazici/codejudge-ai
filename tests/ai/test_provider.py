@@ -139,6 +139,77 @@ async def test_root_and_data_wrapped_responses_normalize_identically(wrapped: bo
     await client.aclose()
 
 
+@pytest.mark.parametrize("part_type", ["text", "output_text"])
+async def test_recognized_assistant_text_part_is_extracted(part_type: str) -> None:
+    response = httpx.Response(
+        200,
+        json={
+            "choices": [
+                {
+                    "message": {
+                        "content": [{"type": part_type, "text": "print('part')"}],
+                    }
+                }
+            ]
+        },
+    )
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: response))
+    provider = OpenAICompatibleProvider(
+        base_url="https://provider.invalid/v1",
+        api_key="secret",
+        timeout_seconds=30,
+        max_attempts=1,
+        max_response_bytes=4096,
+        client=client,
+    )
+
+    normalized = await provider.complete_raw_source(_request())
+
+    assert normalized.content == "print('part')"
+    assert normalized.diagnostics is not None
+    assert normalized.diagnostics.content_type == "text-parts"
+    await client.aclose()
+
+
+async def test_multiple_text_parts_preserve_order_and_do_not_leak_reasoning() -> None:
+    response = httpx.Response(
+        200,
+        json={
+            "choices": [
+                {
+                    "message": {
+                        "reasoning": "hidden-reasoning-must-not-be-source",
+                        "reasoning_details": [{"type": "reasoning.text", "text": "hidden-detail"}],
+                        "content": [
+                            {"type": "text", "text": "def answer():\n"},
+                            {
+                                "type": "output_text",
+                                "text": "    return 42\n",
+                                "annotations": [],
+                            },
+                        ],
+                    }
+                }
+            ]
+        },
+    )
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: response))
+    provider = OpenAICompatibleProvider(
+        base_url="https://provider.invalid/v1",
+        api_key="secret",
+        timeout_seconds=30,
+        max_attempts=1,
+        max_response_bytes=4096,
+        client=client,
+    )
+
+    normalized = await provider.complete_raw_source(_request())
+
+    assert normalized.content == "def answer():\n    return 42\n"
+    assert "hidden" not in normalized.content
+    await client.aclose()
+
+
 async def test_raw_source_contract_omits_schema_and_preserves_content() -> None:
     seen: list[dict[str, object]] = []
     exact_source = "```python\nprint('kept exactly')\n```\nSome prose."
@@ -407,23 +478,24 @@ async def test_malformed_provider_json_is_rejected() -> None:
         max_response_bytes=4096,
         client=client,
     )
-    with pytest.raises(ProviderError, match="malformed_provider_response"):
+    with pytest.raises(ProviderError, match="malformed_provider_response") as captured:
         await provider.complete_structured(_request())
+    assert captured.value.detail_code == "malformed_json"
     await client.aclose()
 
 
 @pytest.mark.parametrize(
-    "payload",
+    ("payload", "detail_code"),
     [
-        {},
-        {"data": {}},
-        {"choices": []},
-        {"choices": [{}]},
-        {"choices": [{"message": {"content": 123}}]},
+        ({}, "missing_choices"),
+        ({"data": {}}, "missing_choices"),
+        ({"choices": []}, "empty_choices"),
+        ({"choices": [{}]}, "missing_message"),
+        ({"choices": [{"message": {"content": 123}}]}, "unsupported_content_type"),
     ],
 )
 async def test_broken_provider_envelopes_use_provider_error_taxonomy(
-    payload: dict[str, Any],
+    payload: dict[str, Any], detail_code: str
 ) -> None:
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload))
@@ -437,8 +509,62 @@ async def test_broken_provider_envelopes_use_provider_error_taxonomy(
         client=client,
     )
 
-    with pytest.raises(ProviderError, match="malformed_provider_response"):
+    with pytest.raises(ProviderError, match="malformed_provider_response") as captured:
         await provider.complete_raw_source(_request())
+    assert captured.value.detail_code == detail_code
+    await client.aclose()
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_code", "detail_code"),
+    [
+        ({"content": None}, "malformed_provider_response", "null_content"),
+        ({"content": ""}, "malformed_provider_response", "empty_content"),
+        ({"content": []}, "malformed_provider_response", "empty_content"),
+        (
+            {"content": None, "reasoning": "reasoning is not candidate source"},
+            "malformed_provider_response",
+            "reasoning_only",
+        ),
+        (
+            {"content": None, "tool_calls": [{"function": {"arguments": "secret"}}]},
+            "malformed_provider_response",
+            "tool_call_only",
+        ),
+        (
+            {"content": {"type": "text", "text": "do not stringify me"}},
+            "malformed_provider_response",
+            "unsupported_content_type",
+        ),
+        (
+            {"content": [{"type": "image_url", "image_url": {"url": "private"}}]},
+            "malformed_provider_response",
+            "unsupported_content_type",
+        ),
+    ],
+)
+async def test_unusable_assistant_content_is_rejected_with_sanitized_detail(
+    message: dict[str, Any], expected_code: str, detail_code: str
+) -> None:
+    response = httpx.Response(200, json={"choices": [{"message": message}]})
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: response))
+    provider = OpenAICompatibleProvider(
+        base_url="https://provider.invalid/v1",
+        api_key="must-not-leak",
+        timeout_seconds=1,
+        max_attempts=1,
+        max_response_bytes=4096,
+        client=client,
+    )
+
+    with pytest.raises(ProviderError, match=expected_code) as captured:
+        await provider.complete_raw_source(_request())
+
+    assert captured.value.code == expected_code
+    assert captured.value.detail_code == detail_code
+    assert "must-not-leak" not in str(captured.value)
+    assert "secret" not in str(captured.value)
+    assert "private" not in str(captured.value)
     await client.aclose()
 
 
@@ -456,6 +582,31 @@ async def test_provider_refusal_is_sanitized() -> None:
         max_response_bytes=4096,
         client=client,
     )
-    with pytest.raises(ProviderError, match="provider_refusal"):
+    with pytest.raises(ProviderError, match="provider_refusal") as captured:
         await provider.complete_structured(_request())
+    assert captured.value.detail_code == "refusal"
+    await client.aclose()
+
+
+async def test_refusal_content_part_is_not_converted_to_candidate_source() -> None:
+    response = httpx.Response(
+        200,
+        json={
+            "choices": [{"message": {"content": [{"type": "refusal", "refusal": "cannot comply"}]}}]
+        },
+    )
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: response))
+    provider = OpenAICompatibleProvider(
+        base_url="https://provider.invalid/v1",
+        api_key="secret",
+        timeout_seconds=1,
+        max_attempts=1,
+        max_response_bytes=4096,
+        client=client,
+    )
+
+    with pytest.raises(ProviderError, match="provider_refusal") as captured:
+        await provider.complete_raw_source(_request())
+
+    assert captured.value.detail_code == "refusal"
     await client.aclose()
