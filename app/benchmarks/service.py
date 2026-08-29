@@ -34,6 +34,12 @@ from app.benchmarks.pricing import PricingCatalog
 from app.benchmarks.prompts import CODING_PROMPT_HASH, model_coding_prompt_hash
 from app.benchmarks.repositories import BenchmarkRepository, BenchmarkResultRow
 from app.benchmarks.statistics import build_leaderboard
+from app.core.config import (
+    DEFAULT_MAX_BENCHMARK_MODELS,
+    DEFAULT_MAX_BENCHMARK_SAMPLES_PER_TASK,
+    DEFAULT_MAX_BENCHMARK_TASKS,
+    DEFAULT_MAX_BENCHMARK_TOTAL_GENERATIONS,
+)
 from app.db.repositories import PersistenceError
 from app.evaluator.service import EvaluationService
 from app.tasks.registry import TaskRegistry
@@ -60,10 +66,10 @@ class BenchmarkService:
         evaluations: EvaluationService,
         *,
         pricing: PricingCatalog | None = None,
-        max_models: int = 5,
-        max_tasks: int = 10,
-        max_samples_per_task: int = 10,
-        max_total_generations: int = 100,
+        max_models: int = DEFAULT_MAX_BENCHMARK_MODELS,
+        max_tasks: int = DEFAULT_MAX_BENCHMARK_TASKS,
+        max_samples_per_task: int = DEFAULT_MAX_BENCHMARK_SAMPLES_PER_TASK,
+        max_total_generations: int = DEFAULT_MAX_BENCHMARK_TOTAL_GENERATIONS,
         max_attempts: int = 3,
     ) -> None:
         self._repository = repository

@@ -232,10 +232,10 @@ and temporary directory are **not** a sandbox. Never use this backend for untrus
 | `BENCHMARK_API_KEY` | unset | Coding provider credential; never persisted or logged |
 | `BENCHMARK_PROVIDER_ID` | `default-benchmark-openai-compatible` | Generation provider identity |
 | `BENCHMARK_GENERATION_CONCURRENCY` | `2` | Conservative generation worker concurrency |
-| `MAX_BENCHMARK_MODELS` | `5` | Model configurations allowed per run |
+| `MAX_BENCHMARK_MODELS` | `20` | Model configurations allowed per run |
 | `MAX_BENCHMARK_TASKS` | `10` | Dataset tasks allowed per run |
 | `MAX_BENCHMARK_SAMPLES_PER_TASK` | `10` | Repeated samples allowed per model/task |
-| `MAX_BENCHMARK_TOTAL_GENERATIONS` | `100` | Planned generation ceiling per run |
+| `MAX_BENCHMARK_TOTAL_GENERATIONS` | `500` | Planned generation ceiling per run |
 
 The enforced Docker timeout is the smaller of the task timeout and
 `SANDBOX_TIMEOUT_SECONDS`.

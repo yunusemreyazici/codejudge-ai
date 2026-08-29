@@ -334,7 +334,7 @@ async def test_provider_concurrency_limit_is_shared_across_models() -> None:
         max_concurrent_requests=1,
         client=client,
     )
-    requests = [_request().model_copy(update={"model": model}) for model in ("model-a", "model-b")]
+    requests = [_request().model_copy(update={"model": f"model-{index}"}) for index in range(1, 13)]
     tasks = [asyncio.create_task(provider.complete_raw_source(request)) for request in requests]
 
     await entered.wait()

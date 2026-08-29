@@ -2,7 +2,7 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
-_FALLBACK_VERSION = "0.7.7"
+_FALLBACK_VERSION = "0.7.8"
 
 
 def codejudge_version() -> str:

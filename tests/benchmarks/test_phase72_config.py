@@ -16,6 +16,28 @@ EXAMPLE = Path("benchmark-configs/real-smoke.example.yaml")
 REPEATED_EXAMPLE = Path("benchmark-configs/repeated-example.yaml")
 
 
+def _many_model_config(count: int, *, samples_per_task: int = 1) -> BenchmarkRunConfig:
+    payload = load_benchmark_config(EXAMPLE).model_dump(mode="python")
+    model_template = payload["models"][0]
+    pricing_template = payload["pricing"]["provider-a/model-a"]
+    payload["providers"] = {"provider-a": payload["providers"]["provider-a"]}
+    payload["providers"]["provider-a"]["max_concurrent_requests"] = 1
+    payload["models"] = tuple(
+        {
+            **model_template,
+            "model": f"model-{index}",
+            "display_name": f"Model {index}",
+        }
+        for index in range(1, count + 1)
+    )
+    payload["pricing"] = {
+        f"provider-a/model-{index}": pricing_template for index in range(1, count + 1)
+    }
+    payload["samples_per_task"] = samples_per_task
+    payload["max_generation_cost"] = {"amount": Decimal("100"), "currency": "USD"}
+    return BenchmarkRunConfig.model_validate(payload)
+
+
 def test_example_config_plans_fourteen_generations_without_provider_calls() -> None:
     config = load_benchmark_config(EXAMPLE)
 
@@ -94,6 +116,58 @@ def test_repeated_example_is_provider_free_and_plans_42_generations() -> None:
     assert plan.planned_generations == 42
     assert all(not model.credential_configured for model in plan.models)
     assert all(not model.endpoint_configured for model in plan.models)
+
+
+@pytest.mark.parametrize("model_count", [1, 5, 12, 20])
+def test_model_count_boundary_accepts_one_through_twenty(model_count: int) -> None:
+    config = _many_model_config(model_count)
+
+    plan = build_plan(config, environment={})
+
+    assert plan.model_count == model_count
+    assert plan.planned_generations == model_count * 7
+    assert {model.max_concurrent_requests for model in plan.models} == {1}
+
+
+def test_model_count_boundary_rejects_zero_and_twenty_one() -> None:
+    with pytest.raises(ValueError, match="at least 1 item"):
+        _many_model_config(0)
+
+    with pytest.raises(BenchmarkConfigError, match="model count exceeds 20"):
+        build_plan(_many_model_config(21), environment={})
+
+
+def test_twelve_models_plan_84_or_252_generations_and_scale_cost_and_budget() -> None:
+    single = _many_model_config(12)
+    repeated = _many_model_config(12, samples_per_task=3)
+
+    single_plan = build_plan(single, environment={})
+    repeated_plan = build_plan(repeated, environment={})
+
+    assert single_plan.planned_generations == 84
+    assert repeated_plan.planned_generations == 252
+    assert [model.planned_generations for model in single_plan.models] == [7] * 12
+    assert [model.planned_generations for model in repeated_plan.models] == [21] * 12
+    assert repeated_plan.estimated_maximum_costs == {
+        currency: amount * 3 for currency, amount in single_plan.estimated_maximum_costs.items()
+    }
+    assert repeated_plan.estimated_maximum_costs["USD"] == sum(
+        (
+            model.estimated_maximum_cost
+            for model in repeated_plan.models
+            if model.estimated_maximum_cost is not None
+        ),
+        Decimal(),
+    )
+
+    assert repeated.max_generation_cost is not None
+    refused_budget = repeated.max_generation_cost.model_copy(
+        update={"amount": repeated_plan.estimated_maximum_costs["USD"] - Decimal("0.000001")}
+    )
+    with pytest.raises(BenchmarkConfigError, match="exceeds budget"):
+        build_plan(
+            repeated.model_copy(update={"max_generation_cost": refused_budget}), environment={}
+        )
 
 
 def test_run_preflight_requires_credentials_and_matching_ai_policy() -> None:

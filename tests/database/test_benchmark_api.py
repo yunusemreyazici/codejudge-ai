@@ -54,6 +54,10 @@ async def test_benchmark_api_plans_lists_details_leaderboard_and_compares(
         "models": [
             {"provider_id": "fake", "model": "good", "temperature": 0},
             {"provider_id": "fake", "model": "bad", "temperature": 0},
+            *[
+                {"provider_id": "fake", "model": f"catalog-{index}", "temperature": 0}
+                for index in range(3, 13)
+            ],
         ],
         "samples_per_task": 2,
     }
@@ -89,22 +93,41 @@ async def test_benchmark_api_plans_lists_details_leaderboard_and_compares(
             "/api/v1/benchmarks",
             json={**payload, "samples_per_task": 11},
         )
+        too_many_models = await client.post(
+            "/api/v1/benchmarks",
+            json={
+                **payload,
+                "models": [
+                    *payload["models"],
+                    *[
+                        {
+                            "provider_id": "fake",
+                            "model": f"catalog-{index}",
+                            "temperature": 0,
+                        }
+                        for index in range(13, 22)
+                    ],
+                ],
+            },
+        )
 
     assert created.status_code == 202
     assert duplicate.status_code == 202
     assert duplicate.json()["benchmark_run_id"] == run_id
     assert fetched.status_code == 200
-    assert fetched.json()["planned_samples"] == 4
+    assert fetched.json()["planned_samples"] == 24
     assert len(samples.json()) == 2
     assert [sample["sample_index"] for sample in samples.json()] == [1, 2]
     assert len({sample["benchmark_sample_id"] for sample in samples.json()}) == 2
     assert {sample["task_id"] for sample in samples.json()} == {"lru-cache"}
     assert detail.status_code == 200
     assert "source" not in detail.json()
-    assert len(leaderboard.json()) == 2
+    assert len(leaderboard.json()) == 12
     assert comparison.json()["compatible"] is True
     assert conflict.status_code == 409
     assert oversized.status_code == 422
+    assert too_many_models.status_code == 422
+    assert "model count exceeds 20" in too_many_models.text
 
     incompatible_run, config, sample = _plan(idempotency_key=None)
     await database_harness.benchmark_repository.create_plan(incompatible_run, [config], [sample])
