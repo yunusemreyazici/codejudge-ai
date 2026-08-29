@@ -132,6 +132,34 @@ async def test_benchmark_repository_persists_plan_artifact_and_atomic_completion
     assert await database_harness.repository.get(sample.evaluation_id) == snapshot
 
 
+async def test_benchmark_run_listing_is_reverse_chronological_filtered_and_limited(
+    database_harness: DatabaseHarness,
+) -> None:
+    repository = database_harness.benchmark_repository
+    first_run, first_config, first_sample = _plan(idempotency_key=None)
+    first_run = first_run.model_copy(update={"created_at": NOW - timedelta(hours=1)})
+    await repository.create_plan(first_run, [first_config], [first_sample])
+
+    second_run, second_config, second_sample = _plan(idempotency_key=None)
+    second_run = second_run.model_copy(update={"created_at": NOW, "dataset_version": "2"})
+    second_sample = second_sample.model_copy(update={"task_version": "2"})
+    await repository.create_plan(second_run, [second_config], [second_sample])
+
+    listed = await repository.list_runs(limit=2)
+    filtered = await repository.list_runs(
+        limit=20,
+        dataset_id="codejudge-core",
+        dataset_version="2",
+    )
+
+    assert [run.benchmark_run_id for run in listed] == [
+        second_run.benchmark_run_id,
+        first_run.benchmark_run_id,
+    ]
+    assert [run.benchmark_run_id for run in filtered] == [second_run.benchmark_run_id]
+    assert len(await repository.list_runs(limit=1)) == 1
+
+
 async def test_concurrent_all_failure_transitions_finalize_run(
     database_harness: DatabaseHarness,
 ) -> None:

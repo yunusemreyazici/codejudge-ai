@@ -544,8 +544,9 @@ successful generation and cost per correct evaluation are shown only when the re
 is nonzero and recorded generation-cost coverage is complete; otherwise they remain unknown or not
 applicable.
 
-Comparable runs must share the dataset fingerprint, coding-prompt version and hash, deterministic
-evaluator fingerprint, samples per task, and benchmark-policy version. Reproducibility metadata
+Comparable runs must share the dataset identity and fingerprint, task/test fingerprints,
+coding-prompt version and hash, benchmark-policy version, and exported scoring/evaluator semantics.
+A samples-per-task change is disclosed as a warning rather than hidden. Reproducibility metadata
 also includes model parameters, generation output mode, provider request timeout,
 sandbox/analyzer/scoring identity, pricing version, generation attempt count, and exact
 generated-source hashes. Changing output mode or timeout changes the model and run fingerprints.
@@ -672,6 +673,27 @@ writes `report.md`, whose metadata identifies the exact results JSON SHA-256. So
 recomputed byte-for-byte before export. A non-terminal run requires `--allow-incomplete`; a failed
 run gets diagnostic provenance but no misleading leaderboard.
 
+Phase 7.5 adds provider-free browsing, historical comparison, and immutable local archives:
+
+```bash
+uv run codejudge-benchmark list --limit 20
+uv run codejudge-benchmark list --dataset codejudge-core@2
+uv run codejudge-benchmark show <RUN_ID>
+uv run codejudge-benchmark compare <RUN_A> <RUN_B>
+uv run codejudge-benchmark compare <RUN_A> <RUN_B> --output comparison.json
+uv run codejudge-benchmark compare <RUN_A> <RUN_B> --output comparison.md
+uv run codejudge-benchmark archive <RUN_ID>
+uv run codejudge-benchmark verify-archive benchmark-results/runs/<RUN_ID>
+```
+
+`list`, `show`, and `compare` read persisted runs and immutable evaluation snapshots; they do not
+construct a provider or modify benchmark state. `verify-archive` is fully offline and does not
+load database settings. Model matching uses `provider_id` plus `model`, while changed model
+configuration fingerprints are reported separately. Incompatible dataset, task/test, prompt,
+benchmark-policy, scoring, or evaluator semantics produce no metric deltas and a nonzero exit.
+`archive` writes only a local `benchmark-results/runs/<RUN_ID>/` bundle and refuses to overwrite a
+nonempty directory. It never registers an archive in PostgreSQL or publishes anything.
+
 Normal output under `benchmark-results/generated/` is Git-ignored. CodeJudge never calls providers
 during tests or CI, never publishes or commits results, and never updates this README with a result.
 See [`benchmark-results/README.md`](benchmark-results/README.md) for the human-review convention.
@@ -702,6 +724,8 @@ handling, Docker daemon boundary, and remaining risks.
 - **Phase 7.3 — Provider-compatible generation (implemented):** explicit output modes and timeouts
 - **Phase 7.4 — Metric semantics and reporting hardening (implemented):** explicit correctness,
   coverage-adjusted, lifecycle, execution-time, and per-success cost semantics
+- **Phase 7.5 — Benchmark result productization (implemented):** provider-free historical browsing,
+  compatible run diffs, portable archives, and offline integrity verification
 - **Phase 8 — Observability + production hardening (planned):** tracing, metrics, and operations
 
 ## Development

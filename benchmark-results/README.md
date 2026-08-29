@@ -1,33 +1,99 @@
 # Benchmark result artifacts
 
-`generated/<run-id>/` is the default output for `codejudge-benchmark export` and
-`codejudge-benchmark report`. It is ignored by Git because generated output is not evidence that
-a real benchmark was reviewed or approved for publication.
+This directory is the local, review-before-publication home for benchmark exports, archives, and
+comparisons. CodeJudge writes files only when explicitly asked. It never commits, pushes, publishes,
+registers an archive in PostgreSQL, or edits a release automatically.
 
-After a human verifies measured results, source hashes, cost and coverage metadata, failures,
-limitations, and the provenance appendix, selected artifacts may be copied deliberately into a
-named directory under `published/`. CodeJudge never commits, pushes, publishes, or edits the main
-README automatically.
+## Layout
 
-Keep `results.json`, `report.md`, and the referenced `candidates/` files together. Do not remove or
-rewrite provenance to make a result look better. Never place credentials, provider endpoints,
-authorization headers, database URLs, Redis URLs, or raw logs here. The exporter builds artifacts
-from allowlisted persisted fields and performs a best-effort secret scan, but human review remains
-required.
+```text
+benchmark-results/
+  README.md
+  generated/<run-id>/
+    results.json
+    report.md
+    candidates/*.py
+  runs/<run-id>/
+    manifest.json
+    results.json
+    report.md
+    candidates/*.py
+  comparisons/<run-a>_vs_<run-b>/
+    comparison.json
+    comparison.md
+  published/<reviewed-name>/
+    ...
+```
 
-Current exports use results schema version `2`. The primary weighted deterministic mean measures
-quality over completed evaluations only and must be read with coverage. Correctness pass uses
-completed evaluations with zero failed official tests; end-to-end success uses all planned samples;
-perfect deterministic score means exactly 100 and is not a synonym for correctness. The
-coverage-adjusted deterministic score assigns zero to missing planned evaluations while preserving
-task weights.
+`generated/` remains Git-ignored scratch output for `export` and `report`. `runs/` is the default
+destination for complete immutable archives. `comparisons/` is the recommended destination for
+portable JSON and GitHub-renderable Markdown comparisons. Nothing under `runs/`, `comparisons/`,
+or `published/` is automatically added to Git.
 
-> Coverage-adjusted score is supplemental and intentionally penalizes missing planned evaluations.
-> It must not be confused with the primary successful-evaluation quality score.
+## Reading a run
 
-Reports keep provider generation latency, sandbox test execution duration, and the longer
-sample-to-snapshot evaluation lifecycle duration separate. Cost-per-success fields are unknown or
-not applicable when their denominator is zero or generation-cost coverage is incomplete—never
-zero by assumption. Historical version-1 artifacts remain historical records; regenerate from the
-same immutable database snapshots to obtain version-2 names and metrics rather than editing an
-artifact in place.
+Current run exports retain Phase 7.4 results schema version `2`. Each run contains immutable run,
+dataset, task/test, prompt, model configuration, evaluator, and generated-source fingerprints plus
+the persisted samples and metric inputs needed for audit.
+
+The primary weighted deterministic mean measures quality over completed evaluations only and must
+always be read with coverage. The coverage-adjusted deterministic score is supplemental: it retains
+task weights and assigns zero only to missing planned evaluations. Correctness pass is the share of
+completed evaluations with zero failed official tests. End-to-end success is the share of all
+planned samples that generated, completed evaluation, and passed correctness. Successful generation
+and generation-failure rates describe provider reliability separately from evaluated code quality.
+
+Reports keep provider generation latency, sandbox correctness-test execution, and the longer
+sample-to-snapshot lifecycle separate. Cost-per-success is unknown or not applicable when its
+denominator is zero or cost coverage is incomplete—never zero by assumption.
+
+## Browse and compare persisted runs
+
+These commands require the application `DATABASE_URL`, but no provider credentials, Redis, or
+network access. They are read-only with respect to benchmark persistence.
+
+```bash
+uv run codejudge-benchmark list --limit 20
+uv run codejudge-benchmark list --dataset codejudge-core@2
+uv run codejudge-benchmark show <run-id>
+uv run codejudge-benchmark compare <run-a> <run-b>
+uv run codejudge-benchmark compare <run-a> <run-b> \
+  --output benchmark-results/comparisons/<run-a>_vs_<run-b>/comparison.json
+uv run codejudge-benchmark compare <run-a> <run-b> \
+  --output benchmark-results/comparisons/<run-a>_vs_<run-b>/comparison.md
+```
+
+Comparison requires matching dataset/task/test fingerprints, benchmark and coding-prompt policy,
+and scoring/evaluator semantics. A changed model configuration is allowed and reported as a warning.
+Models match by stable `provider_id` plus `model`, never display name alone. Rates use explicit
+percentage-point deltas. Missing evaluations and provider/evaluation failures remain missing or
+named failures in per-task rows; they are not silently rewritten as score zero.
+
+## Create and verify an archive
+
+```bash
+uv run codejudge-benchmark archive <run-id>
+uv run codejudge-benchmark verify-archive benchmark-results/runs/<run-id>
+```
+
+`archive` refuses a nonempty destination and writes `results.json`, `report.md`, every referenced
+candidate, and `manifest.json`. The archive-schema-v1 manifest records its creation timestamp,
+CodeJudge version, run ID, dataset and benchmark-run fingerprints, expected files, and SHA-256 for
+the results, report, and each candidate. Output ordering and hashes are independent of filesystem
+enumeration order, locale, temporary paths, and terminal width; the creation timestamp is isolated
+in the manifest.
+
+`verify-archive` is offline: it does not load database or provider configuration. It rejects an
+unsupported or malformed manifest, unsafe paths, symlinks, missing or unexpected files, any hash
+mismatch, a run/fingerprint mismatch, and candidate references whose source hash differs from the
+schema-v2 results. A mismatch returns nonzero.
+
+Never place credentials, provider endpoints, authorization headers, database/Redis URLs, or raw
+logs here. Export uses allowlisted persisted fields and scans for known configured secrets, but a
+human must still review measured results, failures, limitations, cost/coverage, and provenance
+before deliberate publication. Keep every archive intact; do not rewrite provenance to improve a
+result. Historical schema-v1 exports remain historical records rather than being edited in place.
+
+The benchmark rows lost before v0.7.4 are intentionally not reconstructed. Preserved static
+schema-v2 files may be kept and verified as files, but archive verification never rehydrates them
+into PostgreSQL.

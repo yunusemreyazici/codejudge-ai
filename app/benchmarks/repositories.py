@@ -105,6 +105,14 @@ class BenchmarkRepository(Protocol):
 
     async def get_run(self, run_id: UUID) -> BenchmarkRun | None: ...
 
+    async def list_runs(
+        self,
+        *,
+        limit: int,
+        dataset_id: str | None = None,
+        dataset_version: str | None = None,
+    ) -> list[BenchmarkRun]: ...
+
     async def get_configs(self, run_id: UUID) -> list[BenchmarkModelConfig]: ...
 
     async def get_sample(self, sample_id: UUID) -> BenchmarkSample | None: ...
@@ -218,6 +226,34 @@ class SqlAlchemyBenchmarkRepository:
             return None
         configs = await self.get_configs(run_id)
         return _run_from_record(record).model_copy(update={"model_configs": tuple(configs)})
+
+    async def list_runs(
+        self,
+        *,
+        limit: int,
+        dataset_id: str | None = None,
+        dataset_version: str | None = None,
+    ) -> list[BenchmarkRun]:
+        query = select(BenchmarkRunRecord)
+        if dataset_id is not None:
+            query = query.where(BenchmarkRunRecord.dataset_id == dataset_id)
+        if dataset_version is not None:
+            query = query.where(BenchmarkRunRecord.dataset_version == dataset_version)
+        query = query.order_by(
+            BenchmarkRunRecord.created_at.desc(), BenchmarkRunRecord.benchmark_run_id.desc()
+        ).limit(limit)
+        try:
+            async with self._session_factory() as session:
+                records = list(await session.scalars(query))
+        except SQLAlchemyError as error:
+            raise PersistenceError("Benchmark persistence is unavailable.") from error
+        runs: list[BenchmarkRun] = []
+        for record in records:
+            configs = await self.get_configs(record.benchmark_run_id)
+            runs.append(
+                _run_from_record(record).model_copy(update={"model_configs": tuple(configs)})
+            )
+        return runs
 
     async def get_configs(self, run_id: UUID) -> list[BenchmarkModelConfig]:
         try:

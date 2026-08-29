@@ -36,6 +36,19 @@ from app.benchmarks.models import (
     CodingOutput,
     GenerationOutputMode,
 )
+from app.benchmarks.productization import (
+    BenchmarkProductError,
+    build_comparison,
+    build_run_listing,
+    comparison_json_bytes,
+    parse_dataset_selector,
+    render_comparison_markdown,
+    render_run_listing,
+    render_run_show,
+    verify_archive,
+    write_archive,
+    write_comparison,
+)
 from app.benchmarks.prompts import coding_payload, coding_system_prompt
 from app.benchmarks.repositories import SqlAlchemyBenchmarkRepository
 from app.benchmarks.run_config import (
@@ -79,6 +92,11 @@ def build_parser() -> argparse.ArgumentParser:
     probe.add_argument("--show-content", action="store_true")
     status = commands.add_parser("status", help="show durable benchmark progress")
     status.add_argument("run_id", type=UUID)
+    listing = commands.add_parser("list", help="list persisted benchmark runs")
+    listing.add_argument("--limit", type=int, default=20)
+    listing.add_argument("--dataset")
+    show = commands.add_parser("show", help="show a persisted benchmark summary")
+    show.add_argument("run_id", type=UUID)
     export = commands.add_parser("export", help="write deterministic machine-readable results")
     export.add_argument("run_id", type=UUID)
     export.add_argument("--format", choices=("json",), default="json")
@@ -88,6 +106,16 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("run_id", type=UUID)
     report.add_argument("--output", type=Path)
     report.add_argument("--allow-incomplete", action="store_true")
+    compare = commands.add_parser("compare", help="compare two compatible persisted runs")
+    compare.add_argument("run_a", type=UUID)
+    compare.add_argument("run_b", type=UUID)
+    compare.add_argument("--json", action="store_true", dest="json_output")
+    compare.add_argument("--output", type=Path)
+    archive = commands.add_parser("archive", help="create an immutable local run archive")
+    archive.add_argument("run_id", type=UUID)
+    archive.add_argument("--output", type=Path)
+    verify = commands.add_parser("verify-archive", help="verify a local archive without a database")
+    verify.add_argument("path", type=Path)
     return parser
 
 
@@ -101,6 +129,7 @@ def main() -> None:
         BenchmarkCLIError,
         BenchmarkExportError,
         BenchmarkError,
+        BenchmarkProductError,
         ProviderError,
         DatasetRegistryError,
         PersistenceError,
@@ -129,6 +158,13 @@ async def _dispatch(arguments: argparse.Namespace) -> int:
     if arguments.command == "status":
         await _status(arguments.run_id)
         return 0
+    if arguments.command == "list":
+        await _list(arguments.limit, arguments.dataset)
+        return 0
+    if arguments.command == "show":
+        artifacts = await _export(arguments.run_id, allow_incomplete=True)
+        print(render_run_show(artifacts))
+        return 0
     if arguments.command == "export":
         output = arguments.output or _generated_directory(arguments.run_id) / "results.json"
         artifacts = await _export(arguments.run_id, arguments.allow_incomplete)
@@ -146,6 +182,27 @@ async def _dispatch(arguments: argparse.Namespace) -> int:
         print(f"Report: {output}")
         print(f"Results: {results_output}")
         print(f"Results SHA-256: {artifacts.results_sha256}")
+        return 0
+    if arguments.command == "compare":
+        return await _compare(
+            arguments.run_a,
+            arguments.run_b,
+            json_output=arguments.json_output,
+            output=arguments.output,
+        )
+    if arguments.command == "archive":
+        output = arguments.output or _archive_directory(arguments.run_id)
+        artifacts = await _export(arguments.run_id, allow_incomplete=False)
+        manifest = write_archive(artifacts, output)
+        print(f"Archive: {output}")
+        print(f"Run ID: {manifest['run_id']}")
+        print(f"Results SHA-256: {manifest['results_sha256']}")
+        return 0
+    if arguments.command == "verify-archive":
+        manifest = verify_archive(arguments.path)
+        print(f"Archive verified: {arguments.path}")
+        print(f"Run ID: {manifest['run_id']}")
+        print(f"Results SHA-256: {manifest['results_sha256']}")
         return 0
     raise BenchmarkCLIError("Unknown command.")
 
@@ -304,6 +361,53 @@ async def _status(run_id: UUID) -> None:
         await database.dispose()
 
 
+async def _list(limit: int, dataset_selector: str | None) -> None:
+    dataset_id, dataset_version = parse_dataset_selector(dataset_selector)
+    settings = Settings.from_env()
+    database = Database(_required_database(settings))
+    try:
+        repository = SqlAlchemyBenchmarkRepository(database.session_factory)
+        rows = await build_run_listing(
+            repository,
+            limit=limit,
+            dataset_id=dataset_id,
+            dataset_version=dataset_version,
+        )
+        print(render_run_listing(rows))
+    finally:
+        await database.dispose()
+
+
+async def _compare(
+    run_a: UUID,
+    run_b: UUID,
+    *,
+    json_output: bool,
+    output: Path | None,
+) -> int:
+    if run_a == run_b:
+        raise BenchmarkCLIError("Comparison requires two distinct benchmark runs.")
+    if output is not None and json_output and output.suffix.lower() != ".json":
+        raise BenchmarkCLIError("--json requires a .json output path when --output is used.")
+    artifacts_a = await _export(run_a, allow_incomplete=False)
+    artifacts_b = await _export(run_b, allow_incomplete=False)
+    comparison = build_comparison(artifacts_a, artifacts_b)
+    if output is not None:
+        write_comparison(comparison, output)
+        print(f"Comparison: {output}")
+    elif json_output:
+        sys.stdout.write(comparison_json_bytes(comparison).decode("utf-8"))
+    else:
+        sys.stdout.write(render_comparison_markdown(comparison))
+    if comparison["compatibility"]["status"] == "incompatible":
+        print(
+            "error: benchmark runs are incompatible; no metric deltas were produced",
+            file=sys.stderr,
+        )
+        return 2
+    return 0
+
+
 async def _export(run_id: UUID, allow_incomplete: bool) -> BenchmarkArtifacts:
     settings = Settings.from_env()
     database_url = _required_database(settings)
@@ -454,6 +558,10 @@ def _render_costs(costs: dict[str, Decimal]) -> str:
 
 def _generated_directory(run_id: UUID) -> Path:
     return Path("benchmark-results") / "generated" / str(run_id)
+
+
+def _archive_directory(run_id: UUID) -> Path:
+    return Path("benchmark-results") / "runs" / str(run_id)
 
 
 if __name__ == "__main__":
