@@ -38,6 +38,7 @@ class FakeDockerClient:
         capability_results: Sequence[CommandResult] | None = None,
         image_result: CommandResult | None = None,
         oom_event: dict[str, object] | None = None,
+        oom_event_visible_after: int = 0,
     ) -> None:
         self.start_result = start_result or _result()
         self.state = state or {"ExitCode": 0, "OOMKilled": False}
@@ -46,6 +47,8 @@ class FakeDockerClient:
         self.capability_results = list(capability_results or [])
         self.image_result = image_result
         self.oom_event = oom_event
+        self.oom_event_visible_after = oom_event_visible_after
+        self.oom_event_queries = 0
         self.commands: list[list[str]] = []
         self.container_name: str | None = None
         self.attached = FakeAttachedProcess(self.start_result)
@@ -68,10 +71,16 @@ class FakeDockerClient:
         if command[0] == "create":
             self.container_name = command[command.index("--name") + 1]
             return self.create_result
+        if command[:2] == ["start", "--attach"]:
+            return self.start_result
         if command[0] == "inspect":
             return _result(stdout=json.dumps(self.state))
         if command[0] == "events":
-            stdout = "" if self.oom_event is None else json.dumps(self.oom_event) + "\n"
+            self.oom_event_queries += 1
+            visible = self.oom_event_queries > self.oom_event_visible_after
+            stdout = (
+                "" if self.oom_event is None or not visible else json.dumps(self.oom_event) + "\n"
+            )
             return _result(stdout=stdout)
         if command[0] in {"kill", "rm"}:
             return _result()
@@ -197,6 +206,28 @@ async def test_runner_builds_restricted_container_and_cleans_up(correct_lru: str
     assert client.commands[-1][0:2] == ["rm", "--force"]
 
 
+async def test_generated_test_runner_applies_hard_memory_and_swap_ceiling(
+    correct_lru: str,
+) -> None:
+    client = FakeDockerClient()
+
+    result = await _runner(client).evaluate_generated_tests(
+        TaskRegistry.default().get("lru-cache"), correct_lru
+    )
+
+    create = next(command for command in client.commands if command[0] == "create")
+    assert ["--memory", "256m"] == create[create.index("--memory") :][:2]
+    assert ["--memory-swap", "256m"] == create[create.index("--memory-swap") :][:2]
+    assert result.oom_killed is False
+    inspect_index = next(
+        index for index, command in enumerate(client.commands) if command[0] == "inspect"
+    )
+    remove_index = next(
+        index for index, command in enumerate(client.commands) if command[0] == "rm"
+    )
+    assert inspect_index < remove_index
+
+
 async def test_runner_kills_and_removes_timed_out_container(correct_lru: str) -> None:
     client = FakeDockerClient()
 
@@ -205,8 +236,16 @@ async def test_runner_kills_and_removes_timed_out_container(correct_lru: str) ->
     )
 
     assert result.timed_out is True
+    assert result.oom_killed is False
     assert result.enforced_timeout_seconds == 0.01
     assert any(command[0] == "kill" for command in client.commands)
+    inspect_index = next(
+        index for index, command in enumerate(client.commands) if command[0] == "inspect"
+    )
+    remove_index = next(
+        index for index, command in enumerate(client.commands) if command[0] == "rm"
+    )
+    assert inspect_index < remove_index
     assert client.commands[-1][0:2] == ["rm", "--force"]
 
 
@@ -217,6 +256,13 @@ async def test_runner_uses_inspect_metadata_for_oom(correct_lru: str) -> None:
 
     assert result.oom_killed is True
     assert result.exit_code == 137
+    inspect_index = next(
+        index for index, command in enumerate(client.commands) if command[0] == "inspect"
+    )
+    remove_index = next(
+        index for index, command in enumerate(client.commands) if command[0] == "rm"
+    )
+    assert inspect_index < remove_index
     assert client.commands[-1][0:2] == ["rm", "--force"]
 
 
@@ -260,8 +306,39 @@ async def test_runner_does_not_treat_exit_137_without_oom_evidence_as_oom(
     assert result.exit_code == 137
     assert result.oom_killed is False
     assert result.sandbox_error == "Sandbox exited without a valid structured test report."
-    assert any(command[0] == "events" for command in client.commands)
+    assert client.oom_event_queries == 5
     assert client.commands[-1][0:2] == ["rm", "--force"]
+
+
+async def test_runner_retries_exact_oom_event_until_daemon_publishes_it(
+    correct_lru: str,
+) -> None:
+    client = FakeDockerClient(
+        start_result=_result(137),
+        state={"ExitCode": 137, "OOMKilled": False},
+        oom_event={
+            "Action": "oom",
+            "Actor": {
+                "ID": "container-id",
+                "Attributes": {"name": "ignored-because-id-matches"},
+            },
+        },
+        oom_event_visible_after=1,
+    )
+
+    result = await _runner(client).evaluate(TaskRegistry.default().get("lru-cache"), correct_lru)
+
+    assert result.oom_killed is True
+    assert result.timed_out is False
+    assert result.exit_code == 137
+    assert client.oom_event_queries == 2
+    event_indexes = [
+        index for index, command in enumerate(client.commands) if command[0] == "events"
+    ]
+    remove_index = next(
+        index for index, command in enumerate(client.commands) if command[0] == "rm"
+    )
+    assert all(index < remove_index for index in event_indexes)
 
 
 async def test_runner_ignores_unrelated_oom_event(correct_lru: str) -> None:

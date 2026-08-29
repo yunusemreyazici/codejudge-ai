@@ -34,6 +34,8 @@ _CONTROL_OUTPUT_LIMIT_BYTES = 64 * 1024
 _REPORT_LIMIT_BYTES = 64 * 1024
 _CAPABILITY_ATTEMPTS = 3
 _CAPABILITY_RETRY_DELAY_SECONDS = 0.25
+_OOM_EVENT_ATTEMPTS = 5
+_OOM_EVENT_RETRY_DELAY_SECONDS = 0.05
 _SANDBOX_UID = 10001
 _SANDBOX_GID = 10001
 
@@ -756,38 +758,43 @@ class DockerPythonRunner:
         since: str,
         until: str,
     ) -> bool:
-        result = await self._control_command(
-            [
-                "events",
-                "--since",
-                since,
-                "--until",
-                until,
-                "--filter",
-                f"container={container_reference}",
-                "--filter",
-                "event=oom",
-                "--format",
-                "{{json .}}",
-            ]
-        )
-        if result.exit_code != 0 or result.timed_out or result.output_truncated:
-            return False
-        for line in result.stdout.splitlines():
-            try:
-                event: object = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(event, dict):
-                continue
-            action = event.get("Action", event.get("status"))
-            actor = event.get("Actor")
-            actor_id = actor.get("ID") if isinstance(actor, dict) else event.get("id")
-            attributes = actor.get("Attributes") if isinstance(actor, dict) else None
-            name = attributes.get("name") if isinstance(attributes, dict) else None
-            exact_actor = actor_id == container_reference or name == container_name
-            if action == "oom" and exact_actor:
-                return True
+        event_until = until
+        for attempt in range(_OOM_EVENT_ATTEMPTS):
+            result = await self._control_command(
+                [
+                    "events",
+                    "--since",
+                    since,
+                    "--until",
+                    event_until,
+                    "--filter",
+                    f"container={container_reference}",
+                    "--filter",
+                    "event=oom",
+                    "--format",
+                    "{{json .}}",
+                ]
+            )
+            if result.exit_code != 0 or result.timed_out or result.output_truncated:
+                return False
+            for line in result.stdout.splitlines():
+                try:
+                    event: object = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                action = event.get("Action", event.get("status"))
+                actor = event.get("Actor")
+                actor_id = actor.get("ID") if isinstance(actor, dict) else event.get("id")
+                attributes = actor.get("Attributes") if isinstance(actor, dict) else None
+                name = attributes.get("name") if isinstance(attributes, dict) else None
+                exact_actor = actor_id == container_reference or name == container_name
+                if action == "oom" and exact_actor:
+                    return True
+            if attempt + 1 < _OOM_EVENT_ATTEMPTS:
+                await asyncio.sleep(_OOM_EVENT_RETRY_DELAY_SECONDS * (attempt + 1))
+                event_until = self._event_timestamp()
         return False
 
     @staticmethod

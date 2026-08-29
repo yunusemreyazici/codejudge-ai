@@ -306,11 +306,19 @@ async def test_memory_exhaustion_is_reported_from_container_metadata(tmp_path: P
         "from solution import value\n\ndef test_value(): assert value == 1\n",
         timeout_seconds=8,
     )
-    code = "chunks = []\nwhile True:\n    chunks.append(bytearray(8 * 1024 * 1024))\n"
+    code = """
+chunks = []
+while True:
+    chunk = bytearray(16 * 1024 * 1024)
+    for offset in range(0, len(chunk), 4096):
+        chunk[offset] = 1
+    chunks.append(chunk)
+""".lstrip()
 
     result = await runner.evaluate_generated_tests(task, code)
 
     assert result.oom_killed is True
+    assert result.timed_out is False
     assert result.exit_code == 137
     capability = await runner.check_capability()
     assert capability.available, (

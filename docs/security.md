@@ -56,7 +56,9 @@ timeout, and cancellation.
 
 OOM results require runtime evidence: either the container's inspected `OOMKilled` state or a
 Docker `oom` event queried before cleanup with exact container identity and bounded execution
-timestamps. Exit status 137 alone is not sufficient because non-OOM `SIGKILL` paths share it.
+timestamps. Because daemon event publication may trail container wait/inspect completion briefly,
+an empty successful event query is retried five times over a bounded 500 ms backoff window before
+classification. Exit status 137 alone is not sufficient because non-OOM `SIGKILL` paths share it.
 Docker capability commands have a 10-second bound and at most three short retries for transient
 daemon/probe failures; candidate execution itself is never retried or moved to a local fallback.
 
