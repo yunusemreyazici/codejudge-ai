@@ -7,6 +7,7 @@ import logging
 import signal
 import socket
 from contextlib import suppress
+from pathlib import Path
 from uuid import uuid4
 
 from app.ai.factory import create_ai_service
@@ -15,6 +16,7 @@ from app.analysis.factory import create_static_analysis_engine
 from app.benchmarks.datasets import BenchmarkDatasetRegistry
 from app.benchmarks.queue import BenchmarkOutboxPublisher, BenchmarkQueue
 from app.benchmarks.repositories import SqlAlchemyBenchmarkRepository
+from app.benchmarks.run_config import load_benchmark_config, resolved_provider_values
 from app.benchmarks.worker import BenchmarkWorker
 from app.core.config import Settings
 from app.core.logging import configure_logging
@@ -34,13 +36,8 @@ logger = logging.getLogger(__name__)
 async def run_benchmark_worker(settings: Settings) -> None:
     if not settings.benchmark_enabled:
         raise ValueError("codejudge-benchmark-worker requires BENCHMARK_ENABLED=true")
-    if (
-        settings.database_url is None
-        or settings.redis_url is None
-        or settings.benchmark_base_url is None
-        or settings.benchmark_api_key is None
-    ):
-        raise ValueError("Benchmark database, Redis, base URL, and API key are required")
+    if settings.database_url is None or settings.redis_url is None:
+        raise ValueError("Benchmark database and Redis are required")
 
     database = Database(settings.database_url)
     queue = BenchmarkQueue(settings.redis_url)
@@ -64,14 +61,27 @@ async def run_benchmark_worker(settings: Settings) -> None:
         repository=evaluations,
         ai_service=ai_service,
     )
-    provider = OpenAICompatibleProvider(
-        base_url=settings.benchmark_base_url,
-        api_key=settings.benchmark_api_key,
-        timeout_seconds=settings.llm_timeout_seconds,
-        max_attempts=settings.llm_max_attempts,
-        max_response_bytes=settings.llm_max_response_bytes,
-    )
-    providers = {settings.benchmark_provider_id: provider}
+    providers: dict[str, OpenAICompatibleProvider] = {}
+    if settings.benchmark_config_path is not None:
+        config = load_benchmark_config(Path(settings.benchmark_config_path))
+        for provider_id, (base_url, credential) in resolved_provider_values(config).items():
+            providers[provider_id] = OpenAICompatibleProvider(
+                base_url=base_url,
+                api_key=credential,
+                timeout_seconds=settings.llm_timeout_seconds,
+                max_attempts=settings.llm_max_attempts,
+                max_response_bytes=settings.llm_max_response_bytes,
+            )
+    elif settings.benchmark_base_url is not None and settings.benchmark_api_key is not None:
+        providers[settings.benchmark_provider_id] = OpenAICompatibleProvider(
+            base_url=settings.benchmark_base_url,
+            api_key=settings.benchmark_api_key,
+            timeout_seconds=settings.llm_timeout_seconds,
+            max_attempts=settings.llm_max_attempts,
+            max_response_bytes=settings.llm_max_response_bytes,
+        )
+    else:
+        raise ValueError("Benchmark provider configuration is required")
     publisher = BenchmarkOutboxPublisher(
         repository,
         queue,
@@ -134,7 +144,8 @@ async def run_benchmark_worker(settings: Settings) -> None:
             for slot in range(settings.benchmark_generation_concurrency):
                 group.create_task(consumer_loop(slot))
     finally:
-        await provider.close()
+        for provider in providers.values():
+            await provider.close()
         await ai_service.close()
         await queue.close()
         await database.dispose()

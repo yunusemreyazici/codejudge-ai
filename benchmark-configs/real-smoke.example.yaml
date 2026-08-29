@@ -1,0 +1,54 @@
+schema_version: "1"
+name: real-smoke-example
+
+dataset:
+  id: codejudge-core
+  version: "2"
+
+samples_per_task: 1
+
+models:
+  - provider_id: provider-a
+    model: model-a
+    display_name: Model A
+    temperature: 0
+    top_p: 1
+    max_output_tokens: 4000
+
+  - provider_id: provider-b
+    model: model-b
+    display_name: Model B
+    temperature: 0
+    top_p: 1
+    max_output_tokens: 4000
+
+# Values remain environment-only. These entries contain variable names, not endpoints or secrets.
+providers:
+  provider-a:
+    protocol: openai-compatible
+    base_url_env: CODEJUDGE_PROVIDER_A_BASE_URL
+    credential_env: CODEJUDGE_PROVIDER_A_API_KEY
+  provider-b:
+    protocol: openai-compatible
+    base_url_env: CODEJUDGE_PROVIDER_B_BASE_URL
+    credential_env: CODEJUDGE_PROVIDER_B_API_KEY
+
+ai_evaluation:
+  enabled: false
+
+# Replace these example snapshots with explicit provider pricing reviewed on the recorded date.
+pricing:
+  provider-a/model-a:
+    version: example-2026-08-29
+    currency: USD
+    input_per_million: 1.00
+    output_per_million: 4.00
+  provider-b/model-b:
+    version: example-2026-08-29
+    currency: USD
+    input_per_million: 1.00
+    output_per_million: 4.00
+
+max_generation_cost:
+  amount: 10.00
+  currency: USD

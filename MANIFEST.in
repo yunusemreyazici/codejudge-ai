@@ -2,3 +2,5 @@ include docs/*.md
 include sandbox/.dockerignore
 include sandbox/Dockerfile
 include sandbox/*.py
+include benchmark-configs/*.yaml
+include benchmark-results/README.md

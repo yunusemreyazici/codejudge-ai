@@ -145,6 +145,7 @@ class Settings:
     llm_top_p: float = DEFAULT_LLM_TOP_P
     llm_disagreement_threshold: float = DEFAULT_LLM_DISAGREEMENT_THRESHOLD
     benchmark_enabled: bool = DEFAULT_BENCHMARK_ENABLED
+    benchmark_config_path: str | None = None
     benchmark_base_url: str | None = None
     benchmark_api_key: str | None = None
     benchmark_provider_id: str = DEFAULT_BENCHMARK_PROVIDER_ID
@@ -214,10 +215,12 @@ class Settings:
                 raise ValueError("Benchmarking requires PostgreSQL persistence")
             if not self.redis_url:
                 raise ValueError("REDIS_URL is required when benchmarking is enabled")
-            if not self.benchmark_base_url or not self.benchmark_api_key:
+            if not self.benchmark_config_path and (
+                not self.benchmark_base_url or not self.benchmark_api_key
+            ):
                 raise ValueError(
-                    "BENCHMARK_BASE_URL and BENCHMARK_API_KEY are required when "
-                    "benchmarking is enabled"
+                    "BENCHMARK_CONFIG or BENCHMARK_BASE_URL and BENCHMARK_API_KEY are required "
+                    "when benchmarking is enabled"
                 )
         if self.benchmark_base_url and not self.benchmark_base_url.startswith(
             ("http://", "https://")
@@ -257,6 +260,9 @@ class Settings:
         benchmark_api_key = os.getenv("BENCHMARK_API_KEY")
         if benchmark_api_key is not None:
             benchmark_api_key = benchmark_api_key.strip() or None
+        benchmark_config_path = os.getenv("BENCHMARK_CONFIG")
+        if benchmark_config_path is not None:
+            benchmark_config_path = benchmark_config_path.strip() or None
         judge_models_raw = os.getenv("LLM_JUDGE_MODELS", os.getenv("LLM_JUDGE_MODEL", ""))
         judge_models = tuple(
             model.strip() for model in judge_models_raw.split(",") if model.strip()
@@ -336,6 +342,7 @@ class Settings:
                 100,
             ),
             benchmark_enabled=_boolean("BENCHMARK_ENABLED", DEFAULT_BENCHMARK_ENABLED),
+            benchmark_config_path=benchmark_config_path,
             benchmark_base_url=benchmark_base_url,
             benchmark_api_key=benchmark_api_key,
             benchmark_provider_id=_environment_value(

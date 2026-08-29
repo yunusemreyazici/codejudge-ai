@@ -124,7 +124,7 @@ export REDIS_URL=redis://127.0.0.1:6379/0
 uv run alembic upgrade head
 docker build -t codejudge-python-sandbox:phase2 sandbox/
 uv run codejudge-worker
-# In another worker process when BENCHMARK_ENABLED=true:
+# In another worker process when BENCHMARK_ENABLED=true and BENCHMARK_CONFIG is set:
 uv run codejudge-benchmark-worker
 # In another terminal with the same environment:
 uv run uvicorn app.main:app --reload
@@ -227,7 +227,8 @@ and temporary directory are **not** a sandbox. Never use this backend for untrus
 | `LLM_MAX_RESPONSE_BYTES` | `262144` | HTTP response cap before parsing |
 | `LLM_MAX_ADVERSARIAL_TESTS` | `5` | Generated-test count ceiling |
 | `BENCHMARK_ENABLED` | `false` | Enable benchmark API planning and worker configuration |
-| `BENCHMARK_BASE_URL` | unset | OpenAI-compatible coding provider base URL; never persisted |
+| `BENCHMARK_CONFIG` | unset | Phase 7.2 YAML used by the benchmark worker to resolve provider env names |
+| `BENCHMARK_BASE_URL` | unset | Legacy single OpenAI-compatible coding provider base URL; never persisted |
 | `BENCHMARK_API_KEY` | unset | Coding provider credential; never persisted or logged |
 | `BENCHMARK_PROVIDER_ID` | `default-benchmark-openai-compatible` | Generation provider identity |
 | `BENCHMARK_GENERATION_CONCURRENCY` | `2` | Conservative generation worker concurrency |
@@ -553,6 +554,67 @@ curl --fail-with-body -H 'Content-Type: application/json' \
 per-task scores, separate AI coverage/score, generation latency, token usage, and snapshotted cost.
 The CI fake-model run demonstrates this contract; it is not a real-model performance claim.
 
+### Controlled real-model workflow
+
+Phase 7.2 adds a commit-safe YAML format and one `codejudge-benchmark` CLI. Configuration stores
+logical provider IDs, model parameters, pricing snapshots, and the *names* of endpoint/credential
+environment variables. It never stores their values. The only supported real generation protocol
+is OpenAI-compatible chat completions; providers with a different protocol are unsupported until a
+truthful adapter is implemented.
+
+Start with a copy of
+[`benchmark-configs/real-smoke.example.yaml`](benchmark-configs/real-smoke.example.yaml), replace
+the placeholder provider/model identities and example pricing with reviewed values, then export the
+named endpoint and credential variables. Planning is provider-free and uses a conservative input
+bound plus each model's configured maximum output tokens:
+
+```bash
+uv run codejudge-benchmark plan benchmark-configs/real-smoke.yaml
+```
+
+Unknown pricing is displayed as `unknown`, never zero. A configured USD budget is rejected if the
+known maximum estimate exceeds it, if any model price is unknown, or if another currency would
+require conversion. The estimate is not actual spend. Actual provider-reported tokens and cost
+calculated from the immutable pricing snapshot are stored after generation.
+
+For a smoke run, use two models, seven v2 tasks, and one sample per task: 14 generations. Verify
+credentials, structured source output, Docker evaluation, failures, token/cost coverage, candidates,
+and provenance before creating a full configuration. A typical full comparison uses three models,
+seven tasks, and three samples per task (63 generations). Repeated samples expose hosted-model
+nondeterminism; the values remain user-controlled and are not hard-coded. Keep AI evaluation
+disabled for the primary comparison unless a separate, explicitly priced judge experiment is
+intended.
+
+The exact operational flow is:
+
+1. Start PostgreSQL and Redis: `docker compose up -d postgres redis`.
+2. Set `PERSISTENCE_ENABLED=true`, `DATABASE_URL`, and `REDIS_URL`.
+3. Apply migrations with `uv run alembic upgrade head`.
+4. Build the sandbox with `docker build -t codejudge-python-sandbox:phase2 sandbox/`.
+5. Start `codejudge-worker` only if ordinary asynchronous evaluations are also needed.
+6. Set `BENCHMARK_ENABLED=true` and `BENCHMARK_CONFIG=benchmark-configs/real-smoke.yaml`, then
+   start `uv run codejudge-benchmark-worker`.
+7. Export only the endpoint and credential variables named by the YAML; never print them.
+8. Run `uv run codejudge-benchmark plan benchmark-configs/real-smoke.yaml` and review every warning.
+9. Explicitly accept paid execution with
+   `uv run codejudge-benchmark run benchmark-configs/real-smoke.yaml`.
+10. Inspect with `uv run codejudge-benchmark status <RUN_ID>`.
+11. Generate artifacts with `uv run codejudge-benchmark report <RUN_ID>`.
+12. Review `benchmark-results/generated/<RUN_ID>/` before deliberately copying measured artifacts
+    into `benchmark-results/published/<name>/`.
+
+`run` prints the complete plan before durably queuing samples; it is the explicit execution
+boundary and has no interactive confirmation. It returns immediately by default because the
+benchmark worker owns durable asynchronous execution; `--wait` is available for convenience.
+`export` writes canonical `results.json` plus opaque UUID-named candidate files. `report` also
+writes `report.md`, whose metadata identifies the exact results JSON SHA-256. Source hashes are
+recomputed byte-for-byte before export. A non-terminal run requires `--allow-incomplete`; a failed
+run gets diagnostic provenance but no misleading leaderboard.
+
+Normal output under `benchmark-results/generated/` is Git-ignored. CodeJudge never calls providers
+during tests or CI, never publishes or commits results, and never updates this README with a result.
+See [`benchmark-results/README.md`](benchmark-results/README.md) for the human-review convention.
+
 ## Security Warning
 
 Official tests and trusted references are not mounted in candidate workspaces. A trusted host-side
@@ -575,6 +637,7 @@ handling, Docker daemon boundary, and remaining risks.
 - **Phase 6 — LLM judge + adversarial tests (implemented):** versioned review and validated tests
 - **Phase 7 — Multi-model benchmark + leaderboard (implemented):** durable controlled comparisons
 - **Phase 7.1 — Dataset expansion (implemented):** seven rigorous, diverse engineering tasks
+- **Phase 7.2 — Real benchmark workflow (implemented):** safe planning, export, and reporting
 - **Phase 8 — Observability + production hardening (planned):** tracing, metrics, and operations
 
 ## Development

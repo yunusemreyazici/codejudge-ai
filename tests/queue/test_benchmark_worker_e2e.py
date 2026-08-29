@@ -1,5 +1,7 @@
+import asyncio
 import json
 import os
+import sys
 from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -39,6 +41,164 @@ pytestmark = [
     pytest.mark.worker_e2e,
     pytest.mark.benchmark_e2e,
 ]
+
+
+async def test_phase72_packaged_cli_fake_provider_publish_flow(
+    database_harness: DatabaseHarness,
+    redis_harness: RedisHarness,
+    tmp_path: Path,
+) -> None:
+    del redis_harness
+    database_url = os.environ["CODEJUDGE_TEST_DATABASE_URL"]
+    redis_url = os.environ["CODEJUDGE_TEST_REDIS_URL"]
+    config_path = tmp_path / "fake-cli.yaml"
+    config_path.write_text(
+        """\
+schema_version: "1"
+name: phase72-fake-cli
+dataset:
+  id: codejudge-core
+  version: "1"
+samples_per_task: 1
+models:
+  - {provider_id: fake, model: good, temperature: 0, max_output_tokens: 1000}
+  - {provider_id: fake, model: bad, temperature: 0, max_output_tokens: 1000}
+  - {provider_id: fake, model: refusal, temperature: 0, max_output_tokens: 1000}
+providers:
+  fake:
+    protocol: openai-compatible
+    base_url_env: CODEJUDGE_FAKE_BASE_URL
+    credential_env: CODEJUDGE_FAKE_API_KEY
+ai_evaluation:
+  enabled: false
+pricing:
+  fake/good: {version: fake-ci-v1, currency: USD, input_per_million: 2, output_per_million: 8}
+  fake/bad: {version: fake-ci-v1, currency: USD, input_per_million: 2, output_per_million: 8}
+""",
+        encoding="utf-8",
+    )
+    environment = {
+        **os.environ,
+        "PERSISTENCE_ENABLED": "true",
+        "DATABASE_URL": database_url,
+        "REDIS_URL": redis_url,
+        "LOG_LEVEL": "CRITICAL",
+        "CODEJUDGE_FAKE_BASE_URL": "http://127.0.0.1:1/v1",
+        "CODEJUDGE_FAKE_API_KEY": "fake-cli-generation-secret",
+    }
+
+    plan = await _packaged_cli(environment, "plan", str(config_path))
+    assert "Planned generations: 1 x 3 x 1 = 3" in plan
+    assert "Known pricing: 2/3 models" in plan
+    assert "Unknown pricing: fake/refusal" in plan
+
+    accepted = await _packaged_cli(environment, "run", str(config_path))
+    run_id = UUID(
+        next(
+            line.removeprefix("Run ID: ")
+            for line in accepted.splitlines()
+            if line.startswith("Run ID: ")
+        )
+    )
+    assert "Benchmark accepted" in accepted
+    assert "Planned samples: 3" in accepted
+
+    tasks = TaskRegistry.default()
+    settings = Settings(
+        log_level="CRITICAL",
+        persistence_enabled=True,
+        database_url=database_url,
+    )
+    runner = create_python_runner(settings)
+    evaluations = EvaluationService(
+        EvaluationEngine(
+            registry=tasks,
+            runners={"python": runner},
+            max_code_size=settings.max_code_size,
+            analysis_engine=create_static_analysis_engine(settings),
+        ),
+        ExecutionMetadataCollector(settings),
+        database_harness.repository,
+    )
+    datasets = BenchmarkDatasetRegistry.default(tasks)
+    identity = uuid4().hex
+    queue = BenchmarkQueue(
+        redis_url,
+        stream=f"codejudge:benchmark-phase72:{identity}",
+        group=f"codejudge-benchmark-phase72-{identity}",
+    )
+    await queue.ensure_group()
+    publisher = BenchmarkOutboxPublisher(
+        database_harness.benchmark_repository,
+        queue,
+        retry_base_delay_seconds=0.01,
+    )
+    assert await publisher.dispatch_once() == 3
+    provider = FakeProvider()
+    provider.add("coding_generation", "good", [{"language": "python", "source": CORRECT_LRU}])
+    provider.add("coding_generation", "bad", [{"language": "python", "source": INCORRECT_LRU}])
+    provider.add("coding_generation", "refusal", [ProviderError("provider_refusal")])
+    worker = BenchmarkWorker(
+        worker_id="phase72-cli-e2e",
+        providers={"fake": provider},
+        repository=database_harness.benchmark_repository,
+        queue=queue,
+        datasets=datasets,
+        tasks=tasks,
+        evaluations=evaluations,
+        max_code_size=settings.max_code_size,
+        lease_seconds=10,
+        retry_base_delay_seconds=0.01,
+    )
+    for _ in range(3):
+        message = await queue.consume("phase72-cli-e2e", block_ms=100)
+        assert message is not None
+        await worker.process_message(message)
+    await queue.close()
+
+    status = await _packaged_cli(environment, "status", str(run_id))
+    assert "Status: completed" in status
+    assert "Completed: 2" in status
+    assert "Generation failures: 1" in status
+    assert "Current generation cost:" in status
+
+    output_directory = tmp_path / "artifacts"
+    results_path = output_directory / "results.json"
+    report_path = output_directory / "report.md"
+    exported = await _packaged_cli(
+        environment, "export", str(run_id), "--output", str(results_path)
+    )
+    reported = await _packaged_cli(environment, "report", str(run_id), "--output", str(report_path))
+    assert "SHA-256:" in exported
+    assert "Results SHA-256:" in reported
+    results = json.loads(results_path.read_text(encoding="utf-8"))
+    report = report_path.read_text(encoding="utf-8")
+    assert [entry["model"] for entry in results["leaderboard"]] == ["good", "bad", "refusal"]
+    assert results["totals"]["provider_refusals"] == 1
+    assert results["models"][2]["actual_generation_costs"] == {}
+    assert results["evaluator"]["ai_enabled"] is False
+    assert len(list((output_directory / "candidates").glob("*.py"))) == 2
+    assert "fake-cli-generation-secret" not in results_path.read_text(encoding="utf-8")
+    assert "These results apply to the exact dataset" in report
+    assert "- AI evaluation: disabled" in report
+    assert "provider_refusal" in report
+    assert "unknown" in report
+
+
+async def _packaged_cli(environment: dict[str, str], *arguments: str) -> str:
+    executable = Path(sys.executable).with_name("codejudge-benchmark")
+    assert executable.is_file()
+    process = await asyncio.create_subprocess_exec(
+        str(executable),
+        *arguments,
+        cwd=Path.cwd(),
+        env=environment,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    assert process.returncode == 0, stderr.decode("utf-8", errors="replace")
+    return stdout.decode("utf-8")
 
 
 async def test_phase7_fake_models_real_postgres_redis_docker_benchmark_e2e(

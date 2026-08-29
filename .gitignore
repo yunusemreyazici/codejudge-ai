@@ -11,4 +11,4 @@ build/
 *.egg-info/
 .env
 .DS_Store
-
+benchmark-results/generated/

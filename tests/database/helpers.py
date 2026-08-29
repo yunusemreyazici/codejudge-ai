@@ -60,7 +60,7 @@ def job_fixture(
         expected_execution=ExecutionEnvironmentSnapshot(backend="local"),
         expected_analyzer_versions={},
         expected_scoring_policy_version="1",
-        expected_codejudge_version="0.7.1",
+        expected_codejudge_version="0.7.2",
         expected_ai_identity=AIIdentity(
             enabled=False,
             policy_version="1",

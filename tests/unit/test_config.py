@@ -112,6 +112,13 @@ def test_async_mode_requires_persistence_and_redis() -> None:
             persistence_enabled=True,
             database_url="postgresql+asyncpg://codejudge:secret@localhost/codejudge_test",
         )
+    with pytest.raises(ValueError, match="BENCHMARK_CONFIG"):
+        Settings(
+            benchmark_enabled=True,
+            persistence_enabled=True,
+            database_url="postgresql+asyncpg://codejudge:secret@localhost/codejudge_test",
+            redis_url="redis://localhost:6379/3",
+        )
 
 
 def test_llm_settings_are_typed_and_credentials_are_not_part_of_identity(
@@ -196,3 +203,17 @@ def test_benchmark_enabled_requires_database_redis_and_provider() -> None:
             persistence_enabled=True,
             database_url="postgresql+asyncpg://codejudge:secret@localhost/codejudge_test",
         )
+
+
+def test_benchmark_config_replaces_legacy_single_provider_settings() -> None:
+    settings = Settings(
+        benchmark_enabled=True,
+        benchmark_config_path="benchmark-configs/real-smoke.yaml",
+        persistence_enabled=True,
+        database_url="postgresql+asyncpg://codejudge:secret@localhost/codejudge_test",
+        redis_url="redis://localhost:6379/3",
+    )
+
+    assert settings.benchmark_config_path == "benchmark-configs/real-smoke.yaml"
+    assert settings.benchmark_base_url is None
+    assert settings.benchmark_api_key is None

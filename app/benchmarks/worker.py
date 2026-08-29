@@ -266,6 +266,7 @@ def _generation_failure_code(code: str) -> str:
         "provider_rate_limited": "provider_rate_limited",
         "provider_refusal": "provider_refusal",
         "malformed_output": "malformed_output",
+        "malformed_provider_response": "malformed_output",
         "provider_output_too_large": "output_too_large",
         "output_too_large": "output_too_large",
         "provider_request_rejected": "provider_request_rejected",
