@@ -18,6 +18,11 @@ STANDARD_TIMEOUT_TASK_IDS = tuple(
 )
 
 EXPECTED_IDENTITIES = {
+    "lru-cache": (
+        "54786520687b887b982ed804ff483f599607ced06f09dd04706f66316dcb7c5b",
+        "36326c717bf1133e4350f8aad230145ffa008c17c06697faca0dfcffd6789ab7",
+        "44bc81662dec9fa4c333a148d25a912053000d1778c674981b298db0e59baee2",
+    ),
     "async-batch-processor": (
         "82129e90b0156a00461d1f69a9a7dcc83ca80c0c054a48d0037d47aa167bfedd",
         "98f1782f22c1a5341ae3aa30bb04c9befdaa93e974e6c471145836860577b9a1",
@@ -76,6 +81,7 @@ EXPECTED_IDENTITIES = {
 }
 
 EXPECTED_ENTRYPOINTS = {
+    "lru-cache": "solution:LRUCache",
     "async-batch-processor": "solution:process_batch",
     "circuit-breaker": "solution:CircuitBreaker",
     "config-layer-merge": "solution:merge_config_layers",

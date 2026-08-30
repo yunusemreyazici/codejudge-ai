@@ -81,4 +81,5 @@ and fingerprint. Review additions for:
 - balanced portfolio coverage and documented task weights.
 
 The original selection rationale and common-bug discussion remain in
-[Benchmark Design](../BENCHMARK_DESIGN.md).
+[Benchmark Design](../BENCHMARK_DESIGN.md). The current mutation-based discrimination evidence and
+known released-suite gaps are recorded in [Task quality](task-quality.md).

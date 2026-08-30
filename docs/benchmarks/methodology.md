@@ -80,5 +80,17 @@ provider backend/version, rate limits, response compatibility, and execution-tim
 identity. Small panels and one-sample task cells do not establish broad statistical superiority.
 Optional AI assessment is supplemental and never affects deterministic rank or winner eligibility.
 
+## Task discrimination audits
+
+Mutation testing is a test-quality audit, not a model benchmark. CodeJudge applies named,
+syntax-valid faults to trusted reference implementations and asks the authoritative evaluator to
+distinguish them from correct behavior. A mutant is killed when an official case detects the
+fault. Infrastructure failures are invalid rather than killed, and behaviorally equivalent
+mutants are documented and excluded from the score denominator.
+
+A high mutation score is evidence that the sampled faults are discriminated; it does not prove
+complete coverage or task difficulty. See [Task quality](task-quality.md) for the current structural
+audit, known gaps, and interpretation limits.
+
 Continue with [Datasets](datasets.md), [Statistics](statistics.md), [Providers](providers.md), and
 [Historical results](results.md).

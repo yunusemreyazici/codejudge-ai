@@ -1,6 +1,20 @@
 """Deliberately flawed candidates used to prove portfolio tests are discriminating."""
 
 INCORRECT_CANDIDATES = {
+    "lru-cache": """
+class LRUCache:
+    def __init__(self, capacity):
+        self.capacity = capacity
+        self.items = {}
+
+    def get(self, key):
+        return self.items.get(key, -1)
+
+    def put(self, key, value):
+        self.items[key] = value
+        if len(self.items) > self.capacity:
+            self.items.pop(next(iter(self.items)))
+""".lstrip(),
     "structured-event-parser": """
 import json
 

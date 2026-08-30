@@ -32,6 +32,7 @@ contributors, benchmark reviewers, and security reviewers to the detailed contra
 | --- | --- |
 | [Methodology](benchmarks/methodology.md) | End-to-end benchmark flow, ranking, coverage, and interpretation |
 | [Datasets](benchmarks/datasets.md) | Immutable dataset identities, versioned task portfolios, hidden tests, and prompts |
+| [Task quality](benchmarks/task-quality.md) | Mutation discrimination, portfolio balance, runtime density, and known gaps |
 | [Historical results](benchmarks/results.md) | Preserved real-model panels with run-level provenance and caveats |
 | [Statistics](benchmarks/statistics.md) | Task-first means, repeated samples, intervals, dispersion, and stability |
 | [Providers and budgets](benchmarks/providers.md) | Output modes, capability config, concurrency, secrets, pricing, and preflight |
