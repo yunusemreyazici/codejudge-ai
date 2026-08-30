@@ -117,7 +117,7 @@ wheels = [
 
 [[package]]
 name = "codejudge-ai"
-version = "0.7.15"
+version = "0.7.16"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
