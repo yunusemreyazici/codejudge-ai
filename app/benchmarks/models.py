@@ -400,6 +400,8 @@ class LeaderboardEntry(BaseModel):
     test_execution_distribution_seconds: MetricSummary
     mean_evaluation_lifecycle_seconds: float | None = None
     evaluation_lifecycle_distribution_seconds: MetricSummary
+    winner_eligible: bool
+    winner_ineligibility_reasons: list[str]
     per_task: list[PerTaskMetrics]
 
 

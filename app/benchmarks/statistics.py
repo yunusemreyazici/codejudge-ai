@@ -27,6 +27,7 @@ from app.benchmarks.reliability import (
     generation_failure_detail_counts,
 )
 from app.benchmarks.repositories import BenchmarkResultRow
+from app.benchmarks.winners import evaluate_winner_eligibility
 from app.runners.trusted_harness import OFFICIAL_TEST_CASE_COUNTS
 
 
@@ -80,6 +81,11 @@ def build_leaderboard(
 def _entry(config: BenchmarkModelConfig, samples: list[BenchmarkResultRow]) -> LeaderboardEntry:
     planned = len(samples)
     evaluated = [item for item in samples if item.deterministic_score is not None]
+    eligibility = evaluate_winner_eligibility(
+        planned_generations=planned,
+        successful_generations=sum(item.artifact is not None for item in samples),
+        completed_evaluations=len(evaluated),
+    )
     scores = [
         float(item.deterministic_score)
         for item in evaluated
@@ -263,6 +269,8 @@ def _entry(config: BenchmarkModelConfig, samples: list[BenchmarkResultRow]) -> L
             else None
         ),
         evaluation_lifecycle_distribution_seconds=metric_summary(evaluation_lifecycle_durations),
+        winner_eligible=eligibility.eligible,
+        winner_ineligibility_reasons=list(eligibility.reasons),
         per_task=per_task,
     )
 

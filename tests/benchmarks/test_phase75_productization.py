@@ -12,7 +12,7 @@ from uuid import uuid4
 import pytest
 
 from app.benchmarks import cli
-from app.benchmarks.exporting import BenchmarkArtifacts, canonical_json_bytes
+from app.benchmarks.exporting import BenchmarkArtifacts, canonical_json_bytes, render_report
 from app.benchmarks.productization import (
     ArchiveIntegrityError,
     BenchmarkProductError,
@@ -93,6 +93,13 @@ async def test_run_listing_and_show_reuse_persisted_metrics() -> None:
     assert str(run.benchmark_run_id) in listing
     assert "50.0%" in listing
     assert "Generation failures" in listing
+    assert "Observed winner" in listing
+    assert "Eligible winner" in listing
+    assert "Primary winner" not in listing
+    assert "Winner summary" in shown
+    assert "Observed winner: good" in shown
+    assert "Eligible winner: good" in shown
+    assert "| Rank | Model | Eligible |" in shown
     assert "Primary leaderboard" in shown
     assert "Adjusted" in shown
     assert "Correctness" in shown
@@ -249,17 +256,96 @@ async def test_historical_export_without_normalized_reliability_remains_readable
     current = await _artifacts()
 
     def remove_additive_field(document: dict[str, Any]) -> None:
+        document.pop("observed_winner", None)
+        document.pop("eligible_winner", None)
+        document.pop("winner_state", None)
+        document.pop("winner_eligibility_policy", None)
         for model in document["models"]:
             model.pop("generation_reliability", None)
+            model.pop("winner_eligible", None)
+            model.pop("winner_ineligibility_reasons", None)
+        for entry in document["leaderboard"]:
+            entry.pop("winner_eligible", None)
+            entry.pop("winner_ineligibility_reasons", None)
 
     historical = _copy_artifacts(current, mutate=remove_additive_field)
     shown = render_run_show(historical)
     comparison = build_comparison(historical, current)
 
     assert "provider_error=1" in shown
+    assert "Observed winner: good" in shown
+    assert "Eligible winner: good" in shown
+    assert "Observed winner: good" in render_report(historical)
     assert "unknown_detail" in shown
     assert comparison["compatibility"]["blockers"] == []
     assert comparison["model_deltas"]
+
+
+async def test_comparison_reports_observed_and_eligible_winner_changes_as_non_blocking() -> None:
+    run_a = await _artifacts()
+
+    def mutate(document: dict[str, Any]) -> None:
+        refusal = next(model for model in document["models"] if model["model"] == "refusal")
+        refusal.update(
+            {
+                "successful_generations": 1,
+                "completed_evaluations": 1,
+                "winner_eligible": True,
+                "winner_ineligibility_reasons": [],
+            }
+        )
+        refusal_entry = next(
+            entry for entry in document["leaderboard"] if entry["model"] == "refusal"
+        )
+        refusal_entry.update(
+            {
+                "weighted_mean_score": 100,
+                "winner_eligible": True,
+                "winner_ineligibility_reasons": [],
+            }
+        )
+        document["leaderboard"].remove(refusal_entry)
+        document["leaderboard"].insert(0, refusal_entry)
+
+    comparison = build_comparison(run_a, _copy_artifacts(run_a, mutate=mutate))
+
+    assert comparison["compatibility"]["blockers"] == []
+    assert comparison["winner_changes"]["observed"]["changed"] is True
+    assert comparison["winner_changes"]["eligible"]["changed"] is True
+    assert comparison["winner_changes"]["observed"]["b"]["display_name"] == "refusal"
+    assert "## Winner changes" in render_comparison_markdown(comparison)
+
+
+async def test_show_and_report_do_not_fall_back_when_no_model_is_eligible() -> None:
+    current = await _artifacts()
+
+    def mutate(document: dict[str, Any]) -> None:
+        good = next(model for model in document["models"] if model["model"] == "good")
+        good["successful_generations"] = 0
+        good["winner_eligible"] = False
+        good["winner_ineligibility_reasons"] = ["incomplete_generation_success"]
+        document["eligible_winner"] = None
+
+    no_eligible = _copy_artifacts(current, mutate=mutate)
+
+    assert "Observed winner: good" in render_run_show(no_eligible)
+    assert "Eligible winner: No eligible winner" in render_run_show(no_eligible)
+    assert "Eligible winner: No eligible winner" in render_report(no_eligible)
+
+
+async def test_show_suppresses_running_headline_winners() -> None:
+    current = await _artifacts()
+
+    def mutate(document: dict[str, Any]) -> None:
+        document["run"]["status"] = "running"
+        document["run"]["incomplete"] = True
+        document["winner_state"] = "suppressed_non_terminal"
+
+    running = _copy_artifacts(current, mutate=mutate)
+
+    shown = render_run_show(running)
+    assert "Winners: suppressed until the benchmark reaches a terminal state" in shown
+    assert "Eligible winner: pending" in shown
 
 
 async def test_archive_is_deterministic_secret_free_and_verifiable(tmp_path: Path) -> None:

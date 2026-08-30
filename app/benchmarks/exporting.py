@@ -32,6 +32,14 @@ from app.benchmarks.reliability import (
 )
 from app.benchmarks.repositories import BenchmarkRepository, BenchmarkResultRow
 from app.benchmarks.statistics import build_leaderboard, is_correct_evaluation, metric_summary
+from app.benchmarks.winners import (
+    WINNER_ELIGIBILITY_POLICY_DESCRIPTION,
+    eligibility_from_model_document,
+    evaluate_winner_eligibility,
+    select_winners,
+    winner_eligibility_policy_document,
+    winner_reference,
+)
 from app.db.repositories import EvaluationRepository
 from app.snapshots.fingerprints import source_identity
 from app.snapshots.models import EvaluationSnapshot
@@ -105,6 +113,18 @@ class BenchmarkExporter:
             else build_leaderboard(run.model_configs, metric_rows)
         )
         leaderboard_by_config = {entry.model_config_id: entry for entry in leaderboard}
+        model_documents = [
+            _model_document(
+                config,
+                metric_rows,
+                leaderboard_by_config.get(config.model_config_id),
+            )
+            for config in run.model_configs
+        ]
+        winners = select_winners(
+            leaderboard,
+            final=run.status in _TERMINAL_RUNS,
+        )
         document: dict[str, Any] = {
             "schema_version": "2",
             "run": {
@@ -200,14 +220,11 @@ class BenchmarkExporter:
                     "completion; includes queueing and generation."
                 ),
             },
-            "models": [
-                _model_document(
-                    config,
-                    metric_rows,
-                    leaderboard_by_config.get(config.model_config_id),
-                )
-                for config in run.model_configs
-            ],
+            "observed_winner": winner_reference(winners.observed),
+            "eligible_winner": winner_reference(winners.eligible),
+            "winner_state": "final" if winners.final else "suppressed_non_terminal",
+            "winner_eligibility_policy": winner_eligibility_policy_document(),
+            "models": model_documents,
             "samples": sample_documents,
             "per_task": _per_task_documents(leaderboard),
             "leaderboard": [entry.model_dump(mode="json") for entry in leaderboard],
@@ -324,13 +341,18 @@ def render_report(artifacts: BenchmarkArtifacts) -> str:
         f"- Recorded samples: {len(document['samples'])}",
         f"- Results JSON SHA-256: `{artifacts.results_sha256}`",
         "",
-        "## Benchmark Configuration",
-        "",
-        f"- Samples per task: {run['samples_per_task']}",
-        f"- Models: {len(models)}",
-        f"- AI evaluation: {_ai_label(document['evaluator']['ai_enabled'])}",
-        "",
     ]
+    lines.extend(_winners_section(document))
+    lines.extend(
+        [
+            "## Benchmark Configuration",
+            "",
+            f"- Samples per task: {run['samples_per_task']}",
+            f"- Models: {len(models)}",
+            f"- AI evaluation: {_ai_label(document['evaluator']['ai_enabled'])}",
+            "",
+        ]
+    )
     if status == "failed" or not run["meaningful_results"]:
         lines.extend(
             [
@@ -557,6 +579,11 @@ def _model_document(
             row.sample.failure_code for row in generation_failures
         ),
     }
+    eligibility = evaluate_winner_eligibility(
+        planned_generations=len(selected),
+        successful_generations=len(generated),
+        completed_evaluations=len(evaluated),
+    )
     return {
         "model_config_id": config.model_config_id,
         "provider_id": config.provider_id,
@@ -586,6 +613,8 @@ def _model_document(
         ),
         "failure_codes": dict(sorted(failures.items())),
         "generation_reliability": generation_reliability,
+        "winner_eligible": eligibility.eligible,
+        "winner_ineligibility_reasons": list(eligibility.reasons),
         "token_usage": tokens,
         "actual_generation_costs": dict(sorted(costs.items())),
         "generation_cost_distributions": cost_distributions,
@@ -820,6 +849,116 @@ def _leaderboard_section(entries: list[dict[str, Any]], models: list[dict[str, A
             f"{_percent(entry['ai_coverage'])} | {costs} |"
         )
     return [*lines, ""]
+
+
+def _winners_section(document: Mapping[str, Any]) -> list[str]:
+    state, observed, eligible = _export_document_winners(document)
+    lines = ["## Winners", ""]
+    if state != "final":
+        lines.extend(
+            [
+                "Headline winners are suppressed until the benchmark reaches a terminal state.",
+                "",
+                f"Eligibility policy: {WINNER_ELIGIBILITY_POLICY_DESCRIPTION}",
+                "",
+            ]
+        )
+        return lines
+    if not isinstance(observed, Mapping):
+        lines.extend(
+            [
+                "Observed winner: none (no completed measured evaluation).",
+                "",
+                "Eligible winner: No eligible winner.",
+                "",
+                f"Eligibility policy: {WINNER_ELIGIBILITY_POLICY_DESCRIPTION}",
+                "",
+            ]
+        )
+        return lines
+    lines.extend(
+        [
+            (
+                f"Observed winner: {_cell(observed['display_name'])} — Primary mean "
+                f"{_number(observed['primary_mean'])}; generation success "
+                f"{_percent(observed['generation_success_rate'])}; evaluation coverage "
+                f"{_percent(observed['evaluation_coverage'])}."
+            ),
+            "",
+        ]
+    )
+    if isinstance(eligible, Mapping):
+        lines.extend(
+            [
+                (
+                    f"Eligible winner: {_cell(eligible['display_name'])} — Primary mean "
+                    f"{_number(eligible['primary_mean'])}; generation success "
+                    f"{_percent(eligible['generation_success_rate'])}; evaluation coverage "
+                    f"{_percent(eligible['evaluation_coverage'])}."
+                ),
+                "",
+            ]
+        )
+    else:
+        lines.extend(["Eligible winner: No eligible winner.", ""])
+    lines.extend(
+        [
+            f"Eligibility policy: {WINNER_ELIGIBILITY_POLICY_DESCRIPTION}",
+            "",
+        ]
+    )
+    return lines
+
+
+def _export_document_winners(
+    document: Mapping[str, Any],
+) -> tuple[str, Mapping[str, Any] | None, Mapping[str, Any] | None]:
+    state = str(document.get("winner_state", ""))
+    if state == "suppressed_non_terminal":
+        return state, None, None
+    if state == "final":
+        observed = document.get("observed_winner")
+        eligible = document.get("eligible_winner")
+        return (
+            state,
+            observed if isinstance(observed, Mapping) else None,
+            eligible if isinstance(eligible, Mapping) else None,
+        )
+    status = str(document["run"]["status"])
+    if status not in {item.value for item in _TERMINAL_RUNS}:
+        return "suppressed_non_terminal", None, None
+    models = {str(model["model_config_id"]): model for model in document["models"]}
+    observed = None
+    eligible = None
+    for entry in document["leaderboard"]:
+        if entry.get("weighted_mean_score") is None:
+            continue
+        model = models.get(str(entry["model_config_id"]))
+        if model is None:
+            continue
+        reference = {
+            "model_config_id": entry["model_config_id"],
+            "provider_id": entry["provider_id"],
+            "model": entry["model"],
+            "display_name": entry["display_name"],
+            "rank": entry["rank"],
+            "primary_mean": entry["weighted_mean_score"],
+            "generation_success_rate": (
+                model["successful_generations"] / model["planned_samples"]
+                if model["planned_samples"]
+                else 0
+            ),
+            "evaluation_coverage": (
+                model["completed_evaluations"] / model["planned_samples"]
+                if model["planned_samples"]
+                else 0
+            ),
+        }
+        if observed is None:
+            observed = reference
+        if eligible is None and eligibility_from_model_document(model).eligible:
+            eligible = reference
+    return "final", observed, eligible
 
 
 def _per_task_section(rows: list[dict[str, Any]]) -> list[str]:

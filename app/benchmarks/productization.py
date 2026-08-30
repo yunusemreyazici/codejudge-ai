@@ -25,6 +25,11 @@ from app.benchmarks.reliability import (
 )
 from app.benchmarks.repositories import BenchmarkRepository
 from app.benchmarks.statistics import build_leaderboard
+from app.benchmarks.winners import (
+    WINNER_ELIGIBILITY_POLICY_DESCRIPTION,
+    eligibility_from_model_document,
+    select_winners,
+)
 from app.core.version import codejudge_version
 
 COMPARISON_SCHEMA_VERSION = "1"
@@ -50,8 +55,10 @@ class RunListRow:
     coverage: float
     created_at: datetime
     completed_at: datetime | None
-    primary_winner: str | None
-    best_weighted_mean: float | None
+    observed_winner: str | None
+    eligible_winner: str | None
+    observed_winner_mean: float | None
+    eligible_winner_mean: float | None
     generation_failures: int
 
 
@@ -78,7 +85,15 @@ async def build_run_listing(
             if completed and run.status is not BenchmarkRunStatus.FAILED
             else []
         )
-        winner = leaderboard[0] if leaderboard else None
+        winners = select_winners(
+            leaderboard,
+            final=run.status
+            in {
+                BenchmarkRunStatus.COMPLETED,
+                BenchmarkRunStatus.PARTIAL,
+                BenchmarkRunStatus.FAILED,
+            },
+        )
         listing.append(
             RunListRow(
                 run_id=str(run.benchmark_run_id),
@@ -90,8 +105,18 @@ async def build_run_listing(
                 coverage=(completed / run.planned_sample_count if run.planned_sample_count else 0),
                 created_at=run.created_at,
                 completed_at=run.completed_at,
-                primary_winner=None if winner is None else winner.display_name,
-                best_weighted_mean=None if winner is None else winner.weighted_mean_score,
+                observed_winner=(
+                    None if winners.observed is None else winners.observed.display_name
+                ),
+                eligible_winner=(
+                    None if winners.eligible is None else winners.eligible.display_name
+                ),
+                observed_winner_mean=(
+                    None if winners.observed is None else winners.observed.weighted_mean_score
+                ),
+                eligible_winner_mean=(
+                    None if winners.eligible is None else winners.eligible.weighted_mean_score
+                ),
                 generation_failures=sum(
                     row.sample.status is BenchmarkSampleStatus.GENERATION_FAILED for row in rows
                 ),
@@ -105,15 +130,18 @@ def render_run_listing(rows: Sequence[RunListRow]) -> str:
         return "No persisted benchmark runs found."
     lines = [
         "| Run ID | Status | Dataset | Models | Planned | Completed | Coverage | Created | "
-        "Completed At | Primary winner | Best mean | Generation failures |",
-        "| --- | --- | --- | --- | ---: | ---: | ---: | --- | --- | --- | ---: | ---: |",
+        "Completed At | Observed winner | Observed mean | Eligible winner | Eligible mean | "
+        "Generation failures |",
+        "| --- | --- | --- | --- | ---: | ---: | ---: | --- | --- | --- | ---: | --- | "
+        "---: | ---: |",
     ]
     for row in rows:
         lines.append(
             f"| `{row.run_id}` | {row.status} | {row.dataset} | {_cell(row.models)} | "
             f"{row.planned} | {row.completed} | {_percent(row.coverage)} | "
             f"{_timestamp(row.created_at)} | {_timestamp(row.completed_at)} | "
-            f"{_cell(row.primary_winner or 'unknown')} | {_number(row.best_weighted_mean)} | "
+            f"{_cell(row.observed_winner or 'none')} | {_number(row.observed_winner_mean)} | "
+            f"{_cell(row.eligible_winner or 'none')} | {_number(row.eligible_winner_mean)} | "
             f"{row.generation_failures} |"
         )
     return "\n".join(lines)
@@ -124,6 +152,7 @@ def render_run_show(artifacts: BenchmarkArtifacts) -> str:
     run = document["run"]
     dataset = document["dataset"]
     totals = document["totals"]
+    observed_winner, eligible_winner, winners_final = _document_winners(document)
     lines = [
         f"Benchmark run {run['benchmark_run_id']}",
         f"Status: {run['status']}",
@@ -140,17 +169,37 @@ def render_run_show(artifacts: BenchmarkArtifacts) -> str:
         f"Evaluation failures: {totals['evaluation_failures']}",
         "Models: " + ", ".join(model["display_name"] for model in document["models"]),
         "",
+        "Winner summary",
+        (
+            "Winners: suppressed until the benchmark reaches a terminal state"
+            if not winners_final
+            else f"Observed winner: {_winner_label(observed_winner)}"
+        ),
+        (
+            "Eligible winner: pending"
+            if not winners_final
+            else (
+                f"Eligible winner: {_winner_label(eligible_winner)}"
+                if eligible_winner is not None
+                else "Eligible winner: No eligible winner"
+            )
+        ),
+        f"Eligibility policy: {WINNER_ELIGIBILITY_POLICY_DESCRIPTION}",
+        "",
         "Primary leaderboard",
-        "| Rank | Model | Primary mean | Observed mean | 95% CI | Std dev | Coverage | "
+        "| Rank | Model | Eligible | Primary mean | Observed mean | 95% CI | Std dev | Coverage | "
         "Adjusted | Correctness | End-to-end | Cost/planned | Generation p50/p95 | "
         "Test mean/p95 |",
-        "| ---: | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |",
+        "| ---: | --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | "
+        "--- | --- | --- |",
     ]
     models = {str(model["model_config_id"]): model for model in document["models"]}
     for entry in document["leaderboard"]:
         model = models[str(entry["model_config_id"])]
+        eligibility = eligibility_from_model_document(model)
         lines.append(
             f"| {entry['rank']} | {_cell(entry['display_name'])} | "
+            f"{'yes' if eligibility.eligible else 'no'} | "
             f"{_number(entry['weighted_mean_score'])} | "
             f"{_number(model['deterministic_score_distribution']['mean'])} | "
             f"{_interval(model['confidence_interval_95'])} | "
@@ -232,6 +281,7 @@ def build_comparison(
         "model_deltas": [],
         "task_deltas": [],
         "configuration_differences": [],
+        "winner_changes": _winner_changes(document_a, document_b),
     }
     if blockers:
         return comparison
@@ -301,6 +351,16 @@ def render_comparison_markdown(comparison: dict[str, Any]) -> str:
         lines.extend(["## Compatibility warnings", ""])
         lines.extend(f"- {_cell(warning)}" for warning in compatibility["warnings"])
         lines.append("")
+    winner_changes = comparison["winner_changes"]
+    lines.extend(
+        [
+            "## Winner changes",
+            "",
+            f"- Observed winner: {_winner_transition(winner_changes['observed'])}",
+            f"- Eligible winner: {_winner_transition(winner_changes['eligible'])}",
+            "",
+        ]
+    )
     lines.extend(
         [
             "## Model deltas",
@@ -845,6 +905,85 @@ def _model_groups(models: Sequence[dict[str, Any]]) -> dict[tuple[str, str], lis
 
 def _leaderboard_by_config(document: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     return {str(entry["model_config_id"]): entry for entry in document["leaderboard"]}
+
+
+def _document_winners(
+    document: Mapping[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, bool]:
+    """Derive winners from schema-v2 counts, including exports predating eligibility fields."""
+    status = str(document["run"]["status"])
+    final = status in {
+        BenchmarkRunStatus.COMPLETED.value,
+        BenchmarkRunStatus.PARTIAL.value,
+        BenchmarkRunStatus.FAILED.value,
+    }
+    if not final:
+        return None, None, False
+    models = {str(model["model_config_id"]): model for model in document["models"]}
+    observed: dict[str, Any] | None = None
+    eligible: dict[str, Any] | None = None
+    for entry in document["leaderboard"]:
+        if entry.get("weighted_mean_score") is None:
+            continue
+        model = models.get(str(entry["model_config_id"]))
+        if model is None:
+            continue
+        reference = _document_winner_reference(entry)
+        if observed is None:
+            observed = reference
+        if eligible is None and eligibility_from_model_document(model).eligible:
+            eligible = reference
+    return observed, eligible, True
+
+
+def _document_winner_reference(entry: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "model_config_id": entry["model_config_id"],
+        "provider_id": entry["provider_id"],
+        "model": entry["model"],
+        "display_name": entry["display_name"],
+        "primary_mean": entry["weighted_mean_score"],
+    }
+
+
+def _winner_changes(document_a: Mapping[str, Any], document_b: Mapping[str, Any]) -> dict[str, Any]:
+    observed_a, eligible_a, _ = _document_winners(document_a)
+    observed_b, eligible_b, _ = _document_winners(document_b)
+    return {
+        "observed": _winner_change(observed_a, observed_b),
+        "eligible": _winner_change(eligible_a, eligible_b),
+    }
+
+
+def _winner_change(
+    winner_a: Mapping[str, Any] | None, winner_b: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    identity_a = _winner_identity(winner_a)
+    identity_b = _winner_identity(winner_b)
+    return {
+        "changed": identity_a != identity_b,
+        "a": None if winner_a is None else dict(winner_a),
+        "b": None if winner_b is None else dict(winner_b),
+    }
+
+
+def _winner_identity(winner: Mapping[str, Any] | None) -> tuple[str, str] | None:
+    if winner is None:
+        return None
+    return str(winner["provider_id"]), str(winner["model"])
+
+
+def _winner_label(winner: Mapping[str, Any] | None) -> str:
+    if winner is None:
+        return "none"
+    return f"{_cell(winner['display_name'])} — {_number(winner['primary_mean'])}"
+
+
+def _winner_transition(change: Mapping[str, Any]) -> str:
+    winner_a = change["a"]
+    winner_b = change["b"]
+    transition = f"{_winner_label(winner_a)} → {_winner_label(winner_b)}"
+    return f"{transition} ({'changed' if change['changed'] else 'unchanged'})"
 
 
 def _comparison_metric_entry(

@@ -213,6 +213,17 @@ async def test_export_is_deterministic_auditable_and_report_is_structural(tmp_pa
     assert first.results_sha256 == hashlib.sha256(first.results_bytes).hexdigest()
     assert first.document["dataset"]["fingerprint"] == run.dataset_fingerprint
     assert first.document["schema_version"] == "2"
+    assert first.document["observed_winner"]["display_name"] == "good"
+    assert first.document["eligible_winner"]["display_name"] == "good"
+    assert first.document["winner_state"] == "final"
+    assert first.document["winner_eligibility_policy"]["uses_integer_counts"] is True
+    assert first.document["models"][0]["winner_eligible"] is True
+    assert first.document["models"][0]["winner_ineligibility_reasons"] == []
+    assert first.document["models"][1]["winner_eligible"] is False
+    assert first.document["models"][1]["winner_ineligibility_reasons"] == [
+        "incomplete_generation_success",
+        "incomplete_evaluation_coverage",
+    ]
     assert first.document["models"][0]["model_configuration_fingerprint"]
     assert first.document["totals"]["provider_refusals"] == 1
     assert first.document["models"][1]["actual_generation_costs"] == {}
@@ -293,6 +304,9 @@ async def test_export_is_deterministic_auditable_and_report_is_structural(tmp_pa
     assert "provider_error=1" in report
     assert "refusal" in report
     assert "not enough samples" in report
+    assert "## Winners" in report
+    assert "Observed winner: good" in report
+    assert "Eligible winner: good" in report
 
     output = tmp_path / "run" / "results.json"
     write_export(first, output)
@@ -365,6 +379,18 @@ async def test_incomplete_requires_opt_in_and_failed_run_has_no_leaderboard() ->
         await exporter.build(run.benchmark_run_id, secret_values=())
     incomplete = await exporter.build(run.benchmark_run_id, allow_incomplete=True, secret_values=())
     assert incomplete.document["run"]["incomplete"] is True
+    assert incomplete.document["winner_state"] == "suppressed_non_terminal"
+    assert incomplete.document["observed_winner"] is None
+    assert incomplete.document["eligible_winner"] is None
+    assert "Headline winners are suppressed" in render_report(incomplete)
+
+    partial = run.model_copy(update={"status": BenchmarkRunStatus.PARTIAL})
+    partial_artifacts = await _exporter(partial, rows, snapshots).build(
+        run.benchmark_run_id, secret_values=()
+    )
+    assert partial_artifacts.document["winner_state"] == "final"
+    assert partial_artifacts.document["observed_winner"]["display_name"] == "good"
+    assert partial_artifacts.document["eligible_winner"]["display_name"] == "good"
 
     failed = run.model_copy(update={"status": BenchmarkRunStatus.FAILED})
     diagnostic = await _exporter(failed, rows, snapshots).build(
@@ -372,6 +398,12 @@ async def test_incomplete_requires_opt_in_and_failed_run_has_no_leaderboard() ->
     )
     assert diagnostic.document["leaderboard"] == []
     assert "No leaderboard is shown" in render_report(diagnostic)
+
+    failed_without_measurement = await _exporter(failed, rows[1:], {}).build(
+        run.benchmark_run_id, secret_values=()
+    )
+    assert failed_without_measurement.document["observed_winner"] is None
+    assert failed_without_measurement.document["eligible_winner"] is None
 
     no_measurements = await _exporter(run, rows[1:], {}).build(
         run.benchmark_run_id, secret_values=()
