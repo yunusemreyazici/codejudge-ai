@@ -31,7 +31,7 @@ contributors, benchmark reviewers, and security reviewers to the detailed contra
 | Document | What it covers |
 | --- | --- |
 | [Methodology](benchmarks/methodology.md) | End-to-end benchmark flow, ranking, coverage, and interpretation |
-| [Datasets](benchmarks/datasets.md) | Immutable dataset identities, v2 task portfolio, hidden tests, and prompts |
+| [Datasets](benchmarks/datasets.md) | Immutable dataset identities, versioned task portfolios, hidden tests, and prompts |
 | [Historical results](benchmarks/results.md) | Preserved real-model panels with run-level provenance and caveats |
 | [Statistics](benchmarks/statistics.md) | Task-first means, repeated samples, intervals, dispersion, and stability |
 | [Providers and budgets](benchmarks/providers.md) | Output modes, capability config, concurrency, secrets, pricing, and preflight |
@@ -64,4 +64,3 @@ contributors, benchmark reviewers, and security reviewers to the detailed contra
   is separate metadata and may be newer.
 - Never put provider endpoints, credentials, candidate secrets, hidden tests, or reference source
   into public examples.
-

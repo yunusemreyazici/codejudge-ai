@@ -1,0 +1,9 @@
+{
+  "id": "config-layer-merge",
+  "title": "Recursive Configuration Layer Merge",
+  "description": "Implement merge_config_layers(layers: list[dict[str, object]]) -> dict[str, object]. Process layers from first to last. A mapping value recursively merges with an existing mapping at the same key, or starts a new mapping when the previous value is not a mapping. Any non-mapping value replaces the previous value. None is a deletion marker: it removes that key if present, including inside nested mappings. Every layer and every nested mapping must have string keys; otherwise raise TypeError. The input must be a list. Return a fully independent result: do not mutate the layers and do not share mutable dictionaries or lists with them. An empty list returns {}.",
+  "language": "python",
+  "entrypoint": "solution:merge_config_layers",
+  "timeout_seconds": 5.0,
+  "version": "1.0"
+}

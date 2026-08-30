@@ -52,6 +52,47 @@ def test_dataset_v2_is_diverse_stable_and_does_not_mutate_v1() -> None:
     assert first.dataset_fingerprint != second.dataset_fingerprint
 
 
+def test_dataset_v3_expands_diversity_without_mutating_v2() -> None:
+    registry = BenchmarkDatasetRegistry.default(TaskRegistry.default())
+    second = registry.get("codejudge-core", "2")
+    third = registry.get("codejudge-core", "3")
+
+    assert [entry.task_id for entry in second.task_entries] == [
+        "async-batch-processor",
+        "circuit-breaker",
+        "dependency-resolver",
+        "lru-cache",
+        "rate-limiter",
+        "retry-backoff",
+        "ttl-cache",
+    ]
+    assert [entry.task_id for entry in third.task_entries] == [
+        "async-batch-processor",
+        "circuit-breaker",
+        "config-layer-merge",
+        "dependency-resolver",
+        "frame-decoder",
+        "interval-reservation",
+        "logical-path",
+        "lru-cache",
+        "rate-limiter",
+        "retry-backoff",
+        "structured-event-parser",
+        "ttl-cache",
+    ]
+    assert len({(entry.task_id, entry.task_version) for entry in third.task_entries}) == 12
+    assert all(entry.weight == 1 for entry in third.task_entries)
+    assert second.dataset_fingerprint == (
+        "ee0f631d6810c039e84d90d9f2b77f20dcabbe27bef0af600695ab9cb1111988"
+    )
+    assert third.dataset_fingerprint == (
+        "fcbc143e6b704588c6c3b4089104896dff06f1dcb3c5f21aab7c766a1bb4d80e"
+    )
+    assert third.dataset_fingerprint == dataset_fingerprint(
+        third.dataset_id, third.dataset_version, third.task_entries
+    )
+
+
 def test_dataset_registry_rejects_duplicate_task_entries(tmp_path: Path) -> None:
     tasks = TaskRegistry.default()
     task = tasks.get("lru-cache")
@@ -150,9 +191,12 @@ def test_coding_prompt_payload_contains_only_public_task_data() -> None:
     assert "solution.py" not in rendered
 
 
-def test_every_v2_coding_payload_excludes_private_evaluator_material() -> None:
+@pytest.mark.parametrize("dataset_version", ["2", "3"])
+def test_every_published_coding_payload_excludes_private_evaluator_material(
+    dataset_version: str,
+) -> None:
     tasks = TaskRegistry.default()
-    dataset = BenchmarkDatasetRegistry.default(tasks).get("codejudge-core", "2")
+    dataset = BenchmarkDatasetRegistry.default(tasks).get("codejudge-core", dataset_version)
 
     for entry in dataset.task_entries:
         payload = coding_payload(tasks.get(entry.task_id).specification)

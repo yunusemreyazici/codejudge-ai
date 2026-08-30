@@ -20,6 +20,11 @@ provider semaphore prevents those models from bypassing the configured request l
 tasks while retaining the exact v1 LRU identity. Every v2 task has weight `1.0`; weights are not
 tuned around any model or desired leaderboard result.
 
+`codejudge-core@3` preserves every v2 task identity and adds five equally weighted tasks covering
+structured parsing, interval processing, recursive transformations, logical path handling, and
+incremental stream decoding. Published benchmark results remain tied to v2 until real v3 runs are
+performed.
+
 Changing a public contract or official test changes its fingerprint and requires a new task and
 dataset version. Dataset files reference task identities but contain neither test source nor
 reference implementations.
@@ -35,6 +40,11 @@ reference implementations.
 | Dependency Resolver | graphs and cycle detection | lexical tie-breaking |
 | Async Batch Processor | asyncio and bounded concurrency | events/barriers; no timing sleeps |
 | Circuit Breaker | reliability state machines | caller-supplied logical timestamps |
+| Structured Event Parser | parsing and schema validation | explicit JSON records and order |
+| Interval Reservation | half-open interval processing | integer boundaries only |
+| Configuration Layer Merge | recursive data transformation | pure layered input |
+| Logical Path | path parsing and normalization | lexical POSIX rules only |
+| Frame Decoder | streaming parser state | caller-supplied text chunks |
 
 The tasks are intentionally compact enough for repeated benchmark runs but cover materially
 different failure modes. They avoid network, filesystem, randomness, external services, and real
@@ -58,13 +68,23 @@ Official tests target mistakes that plausible-looking implementations commonly m
   assumptions.
 - **Circuit Breaker:** never block open calls, use the wrong recovery boundary, or mishandle a
   failed half-open probe. Success reset, timestamp validation, and explicit reset are covered.
+- **Structured Event Parser:** accept malformed schemas, reorder records, allow duplicate IDs, or
+  mishandle equal/decreasing timestamps and blank lines.
+- **Interval Reservation:** treat adjacent half-open intervals as overlapping, miss containment,
+  consume rejected IDs, or expose mutable internal records.
+- **Configuration Layer Merge:** perform only a shallow update, retain deleted keys, mutate input,
+  or share nested mutable values with the result.
+- **Logical Path:** consult platform paths, allow traversal above root, mishandle normalized cwd,
+  or treat backslash as a POSIX separator.
+- **Frame Decoder:** assume one frame per chunk, accept noncanonical prefixes, lose partial state,
+  or retain corrupted/truncated state after an error.
 
 Official assertions run in a trusted host harness. The candidate container mounts only
 `solution.py`; a bounded JSON-lines protocol forwards one current public-API operation at a time to
 a fresh candidate process for each case. Expected values, future operations, test source,
 references, canaries, and evaluator paths remain outside the candidate interpreter and filesystem.
 The canonical pytest files remain the versioned semantic source used for test fingerprints, and
-the host plans preserve the same 61 case counts and behaviors. A repeated real-Docker malicious
+the host plans preserve the same 130 case counts and behaviors. A repeated real-Docker malicious
 filesystem probe guards this boundary. See the security model for protocol details and limitations.
 
 ## References and adversarial tests
@@ -122,7 +142,7 @@ and deterministic scores are unchanged and can be re-exported without a benchmar
 ## Interpretation limits
 
 Dataset results depend on task selection, public wording, official test quality, model parameters,
-provider behavior, sampling, and evaluator identity. Seven compact Python tasks cannot represent
+provider behavior, sampling, and evaluator identity. Twelve compact Python tasks cannot represent
 all software engineering, repository maintenance, framework knowledge, security engineering, or
 long-horizon agent behavior. Leaderboards must therefore be read as controlled comparisons for
 this exact dataset—not universal coding-intelligence rankings.

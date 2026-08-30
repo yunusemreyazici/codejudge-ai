@@ -1,0 +1,9 @@
+{
+  "id": "interval-reservation",
+  "title": "Half-Open Interval Reservation Book",
+  "description": "Implement class ReservationBook. reserve(reservation_id: str, resource: str, start: int, end: int) -> bool adds a half-open interval [start, end). IDs and resources must be nonempty strings; start and end must be nonnegative non-boolean integers with start < end, otherwise raise ValueError. Reservation IDs are globally unique: reusing an accepted ID raises ValueError. Intervals on the same resource may be adjacent but must not overlap. An overlap returns False without changing state or consuming the ID. cancel(reservation_id: str) -> bool removes an accepted reservation and is idempotent for missing IDs. reservations(resource: str) -> list[dict[str, object]] returns new dictionaries with keys id, start, and end, ordered by start, then end, then id. Resources are independent.",
+  "language": "python",
+  "entrypoint": "solution:ReservationBook",
+  "timeout_seconds": 5.0,
+  "version": "1.0"
+}

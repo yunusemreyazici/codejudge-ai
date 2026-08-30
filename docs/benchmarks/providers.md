@@ -49,8 +49,9 @@ should normally use the same output mode; reports disclose mixed modes.
 ## Planning and cost boundary
 
 Planning expands all models, tasks, and samples before execution. The current defensive ceilings
-allow up to 20 models, 10 tasks, 10 samples per task, and 500 total generations. A 12-model,
-seven-task run plans 84 generations at one sample or 252 at three samples.
+allow up to 20 models, 20 tasks, 10 samples per task, and 500 total generations. A 12-model v2 run
+plans 84 generations at one sample or 252 at three samples; the same panel on the twelve-task v3
+dataset plans 144 or 432 respectively.
 
 Each model has a reviewed pricing snapshot:
 

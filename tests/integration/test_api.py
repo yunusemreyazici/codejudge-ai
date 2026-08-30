@@ -55,10 +55,15 @@ async def test_list_tasks_does_not_expose_tests(client: AsyncClient) -> None:
     assert {task["id"] for task in body} == {
         "async-batch-processor",
         "circuit-breaker",
+        "config-layer-merge",
         "dependency-resolver",
+        "frame-decoder",
+        "interval-reservation",
+        "logical-path",
         "lru-cache",
         "rate-limiter",
         "retry-backoff",
+        "structured-event-parser",
         "ttl-cache",
     }
     for task in body:

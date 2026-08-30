@@ -13,6 +13,7 @@ from app.tasks.registry import TaskRegistry
 from tests.tasks.candidates import INCORRECT_CANDIDATES
 
 pytestmark = pytest.mark.sandbox
+TRUSTED_TASK_IDS = tuple(task.id for task in TaskRegistry.default().list())
 
 
 @pytest_asyncio.fixture(scope="module")
@@ -28,7 +29,7 @@ async def portfolio_runner() -> DockerPythonRunner:
     return runner
 
 
-@pytest.mark.parametrize("task_id", tuple(INCORRECT_CANDIDATES))
+@pytest.mark.parametrize("task_id", TRUSTED_TASK_IDS)
 async def test_trusted_reference_passes_in_real_docker(
     portfolio_runner: DockerPythonRunner, task_id: str
 ) -> None:

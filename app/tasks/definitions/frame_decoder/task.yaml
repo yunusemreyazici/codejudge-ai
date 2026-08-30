@@ -1,0 +1,9 @@
+{
+  "id": "frame-decoder",
+  "title": "Incremental Length-Prefixed Frame Decoder",
+  "description": "Implement class LengthPrefixedDecoder(max_frame_size: int). max_frame_size must be a positive non-boolean integer no greater than 1,000,000, otherwise raise ValueError. feed(chunk: str) -> list[str] incrementally decodes zero or more frames formatted as '<length>:<payload>', where length is the payload's Python character count. A length is canonical decimal: either '0' or a nonzero ASCII digit followed by ASCII digits, with no leading zeros. Chunks may split the prefix or payload, one chunk may contain multiple frames, and payloads may contain any characters. Incomplete data is buffered. A malformed prefix or length above max_frame_size raises ValueError and clears buffered state. A non-string chunk raises TypeError without changing buffered state. finish() returns None when no data is buffered; otherwise it raises ValueError for a truncated frame and clears buffered state. feed('') is allowed.",
+  "language": "python",
+  "entrypoint": "solution:LengthPrefixedDecoder",
+  "timeout_seconds": 5.0,
+  "version": "1.0"
+}

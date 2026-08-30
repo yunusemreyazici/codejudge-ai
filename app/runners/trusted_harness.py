@@ -682,6 +682,405 @@ def _circuit_cases() -> tuple[OfficialCase, ...]:
     )
 
 
+def _structured_event_cases() -> tuple[OfficialCase, ...]:
+    normal = [
+        '{"id":"a","timestamp":1,"kind":"created","payload":{"x":2}}',
+        "   ",
+        '{"id":"b","timestamp":1,"kind":"updated"}',
+        '{"id":"c","timestamp":3,"kind":"deleted","payload":{}}',
+    ]
+    invalid_lines = (
+        ("malformed json", "{"),
+        ("missing required field", '{"timestamp":1,"kind":"created"}'),
+        ("empty id", '{"id":"","timestamp":1,"kind":"created"}'),
+        ("boolean timestamp", '{"id":"a","timestamp":true,"kind":"created"}'),
+        ("negative timestamp", '{"id":"a","timestamp":-1,"kind":"created"}'),
+        ("invalid kind", '{"id":"a","timestamp":1,"kind":"other"}'),
+        ("nonstring kind", '{"id":"a","timestamp":1,"kind":[]}'),
+        ("nonobject payload", '{"id":"a","timestamp":1,"kind":"created","payload":[]}'),
+        ("unknown field", '{"id":"a","timestamp":1,"kind":"created","extra":1}'),
+    )
+    invalid_cases = tuple(
+        _case(
+            name,
+            _expect(_function("parse_events", [line]), exception="ValueError"),
+        )
+        for name, line in invalid_lines
+    )
+    return (
+        _case(
+            "parse normalize and preserve order",
+            _expect(
+                _function("parse_events", normal),
+                [
+                    {"id": "a", "timestamp": 1, "kind": "created", "payload": {"x": 2}},
+                    {"id": "b", "timestamp": 1, "kind": "updated", "payload": {}},
+                    {"id": "c", "timestamp": 3, "kind": "deleted", "payload": {}},
+                ],
+            ),
+        ),
+        _case(
+            "empty and blank input",
+            _expect(_function("parse_events", []), []),
+            _expect(_function("parse_events", ["", "\t", "  "]), []),
+        ),
+        _case("none outer input", _expect(_function("parse_events", None), exception="TypeError")),
+        _case(
+            "tuple outer input",
+            _expect(_function("parse_events", {"$tuple": []}), exception="TypeError"),
+        ),
+        _case(
+            "string outer input",
+            _expect(_function("parse_events", "one line"), exception="TypeError"),
+        ),
+        _case(
+            "item and decoded types",
+            _expect(_function("parse_events", [1]), exception="TypeError"),
+            _expect(_function("parse_events", ["[]"]), exception="TypeError"),
+        ),
+        *invalid_cases,
+        _case(
+            "duplicate ids and decreasing timestamps",
+            _expect(
+                _function(
+                    "parse_events",
+                    [
+                        '{"id":"a","timestamp":1,"kind":"created"}',
+                        '{"id":"a","timestamp":2,"kind":"updated"}',
+                    ],
+                ),
+                exception="ValueError",
+                message="duplicate",
+            ),
+            _expect(
+                _function(
+                    "parse_events",
+                    [
+                        '{"id":"a","timestamp":2,"kind":"created"}',
+                        '{"id":"b","timestamp":1,"kind":"updated"}',
+                    ],
+                ),
+                exception="ValueError",
+                message="nondecreasing",
+            ),
+        ),
+        _case(
+            "fresh payload mappings",
+            _expect(
+                _function(
+                    "parse_events",
+                    ['{"id":"a","timestamp":0,"kind":"created","payload":{"x":1}}'],
+                ),
+                [{"id": "a", "timestamp": 0, "kind": "created", "payload": {"x": 1}}],
+            ),
+        ),
+    )
+
+
+def _interval_reservation_cases() -> tuple[OfficialCase, ...]:
+    invalid = (
+        ("empty reservation id", "", "room", 0, 1),
+        ("empty resource", "id", "", 0, 1),
+        ("negative start", "id", "room", -1, 1),
+        ("empty interval", "id", "room", 1, 1),
+        ("reversed interval", "id", "room", 2, 1),
+        ("boolean start", "id", "room", True, 2),
+        ("boolean end", "id", "room", 0, False),
+    )
+    invalid_cases = tuple(
+        _case(
+            name,
+            _expect(_construct("ReservationBook", "book"), None),
+            _expect(
+                _method("book", "reserve", reservation_id, resource, start, end),
+                exception="ValueError",
+            ),
+        )
+        for name, reservation_id, resource, start, end in invalid
+    )
+    return (
+        _case(
+            "overlap adjacency and ordering",
+            _expect(_construct("ReservationBook", "book"), None),
+            _expect(_method("book", "reserve", "late", "room", 10, 20), True),
+            _expect(_method("book", "reserve", "early", "room", 0, 10), True),
+            _expect(_method("book", "reserve", "overlap", "room", 9, 11), False),
+            _expect(
+                _method("book", "reservations", "room"),
+                [
+                    {"id": "early", "start": 0, "end": 10},
+                    {"id": "late", "start": 10, "end": 20},
+                ],
+            ),
+        ),
+        _case(
+            "resources independent and rejected id reusable",
+            _expect(_construct("ReservationBook", "book"), None),
+            _expect(_method("book", "reserve", "a", "one", 0, 5), True),
+            _expect(_method("book", "reserve", "retry", "one", 1, 2), False),
+            _expect(_method("book", "reserve", "retry", "two", 1, 2), True),
+        ),
+        _case(
+            "cancel idempotently releases interval",
+            _expect(_construct("ReservationBook", "book"), None),
+            _expect(_method("book", "reserve", "a", "room", 1, 4), True),
+            _expect(_method("book", "cancel", "a"), True),
+            _expect(_method("book", "cancel", "a"), False),
+            _expect(_method("book", "reserve", "b", "room", 1, 4), True),
+        ),
+        _case(
+            "accepted ids globally unique",
+            _expect(_construct("ReservationBook", "book"), None),
+            _expect(_method("book", "reserve", "same", "one", 0, 1), True),
+            _expect(
+                _method("book", "reserve", "same", "two", 10, 11),
+                exception="ValueError",
+                message="already exists",
+            ),
+        ),
+        *invalid_cases,
+        _case(
+            "containment and equal ranges overlap",
+            _expect(_construct("ReservationBook", "book"), None),
+            _expect(_method("book", "reserve", "outer", "room", 5, 20), True),
+            _expect(_method("book", "reserve", "inner", "room", 10, 12), False),
+            _expect(_method("book", "reserve", "same-range", "room", 5, 20), False),
+        ),
+        _case(
+            "reservation views are stable copies",
+            _expect(_construct("ReservationBook", "book"), None),
+            _expect(_method("book", "reserve", "a", "room", 0, 1), True),
+            _expect(
+                _method("book", "reservations", "room"),
+                [{"id": "a", "start": 0, "end": 1}],
+            ),
+            _expect(
+                _method("book", "reservations", "room"),
+                [{"id": "a", "start": 0, "end": 1}],
+            ),
+        ),
+    )
+
+
+def _config_layer_cases() -> tuple[OfficialCase, ...]:
+    bad_keys = (
+        ("top-level nonstring key", [{"$dict": [[1, "bad"]]}]),
+        ("nested nonstring key", [{"nested": {"$dict": [[2, "bad"]]}}]),
+        ("list-contained nonstring key", [{"items": [{"$dict": [[3, "bad"]]}]}]),
+    )
+    bad_key_cases = tuple(
+        _case(name, _expect(_function("merge_config_layers", value), exception="TypeError"))
+        for name, value in bad_keys
+    )
+    return (
+        _case(
+            "recursive merge replacement and deletion",
+            _expect(
+                _function(
+                    "merge_config_layers",
+                    [
+                        {
+                            "service": {"host": "a", "port": 80},
+                            "debug": False,
+                            "obsolete": 1,
+                        },
+                        {
+                            "service": {"port": 443, "tls": True},
+                            "debug": True,
+                            "obsolete": None,
+                        },
+                    ],
+                ),
+                {"service": {"host": "a", "port": 443, "tls": True}, "debug": True},
+            ),
+        ),
+        _case(
+            "empty layers and missing deletion",
+            _expect(_function("merge_config_layers", []), {}),
+            _expect(_function("merge_config_layers", [{"missing": None}]), {}),
+        ),
+        _case(
+            "mappings and scalars replace each other",
+            _expect(_function("merge_config_layers", [{"a": 1}, {"a": {"b": 2}}]), {"a": {"b": 2}}),
+            _expect(_function("merge_config_layers", [{"a": {"b": 2}}, {"a": [3]}]), {"a": [3]}),
+        ),
+        _case(
+            "input layers are not mutated",
+            _expect(_store("layers", [{"a": {"items": [1, {"x": 2}]}}]), None),
+            _expect(
+                _function("merge_config_layers", _ref("layers")),
+                {"a": {"items": [1, {"x": 2}]}},
+            ),
+            _expect(_stored("layers"), [{"a": {"items": [1, {"x": 2}]}}]),
+        ),
+        _case(
+            "none outer value",
+            _expect(_function("merge_config_layers", None), exception="TypeError"),
+        ),
+        _case(
+            "mapping outer value",
+            _expect(_function("merge_config_layers", {}), exception="TypeError"),
+        ),
+        _case(
+            "tuple outer value",
+            _expect(_function("merge_config_layers", {"$tuple": []}), exception="TypeError"),
+        ),
+        _case(
+            "nonmapping layer",
+            _expect(_function("merge_config_layers", [{"valid": 1}, []]), exception="TypeError"),
+        ),
+        *bad_key_cases,
+        _case(
+            "nested deletion retains parent",
+            _expect(
+                _function(
+                    "merge_config_layers",
+                    [{"a": {"x": 1, "y": 2}}, {"a": {"x": None}}],
+                ),
+                {"a": {"y": 2}},
+            ),
+        ),
+    )
+
+
+def _logical_path_cases() -> tuple[OfficialCase, ...]:
+    return (
+        _case(
+            "absolute normalization",
+            _expect(_function("normalize_path", "//api/./v1/../v2//"), "/api/v2"),
+            _expect(_function("normalize_path", "/"), "/"),
+        ),
+        _case(
+            "relative path uses normalized cwd",
+            _expect(_function("normalize_path", "../logs/./today", "/srv/app/"), "/srv/logs/today"),
+            _expect(_function("normalize_path", "child", "/a//b/../c"), "/a/c/child"),
+        ),
+        _case(
+            "absolute path ignores cwd components",
+            _expect(_function("normalize_path", "/safe", "/ignored/../cwd"), "/safe"),
+        ),
+        _case("empty path", _expect(_function("normalize_path", "", "/"), exception="ValueError")),
+        _case("empty cwd", _expect(_function("normalize_path", "a", ""), exception="ValueError")),
+        _case(
+            "relative cwd",
+            _expect(_function("normalize_path", "a", "relative"), exception="ValueError"),
+        ),
+        _case(
+            "exact root boundary",
+            _expect(_function("normalize_path", "..", "/a"), "/"),
+            _expect(_function("normalize_path", "a/..", "/"), "/"),
+        ),
+        _case(
+            "above-root traversal",
+            _expect(
+                _function("normalize_path", "../x", "/"),
+                exception="ValueError",
+                message="above root",
+            ),
+            _expect(
+                _function("normalize_path", "x", "/../bad"),
+                exception="ValueError",
+                message="above root",
+            ),
+        ),
+        _case(
+            "backslash is ordinary",
+            _expect(_function("normalize_path", r"a\b/../c", "/root"), "/root/c"),
+            _expect(_function("normalize_path", r"a\b", "/root"), r"/root/a\b"),
+        ),
+        _case(
+            "absolute path replaces cwd",
+            _expect(_function("normalize_path", "/x/../y", "/base"), "/y"),
+        ),
+    )
+
+
+def _frame_decoder_cases() -> tuple[OfficialCase, ...]:
+    invalid_maximums = (0, -1, True, 1.5, 1_000_001)
+    maximum_cases = tuple(
+        _case(
+            f"invalid maximum {index}",
+            _expect(
+                _construct("LengthPrefixedDecoder", "decoder", maximum),
+                exception="ValueError",
+            ),
+        )
+        for index, maximum in enumerate(invalid_maximums)
+    )
+    malformed = (":", "01:a", "x:a", "\uff11\uff12:a")
+    malformed_cases = tuple(
+        _case(
+            f"malformed prefix {index}",
+            _expect(_construct("LengthPrefixedDecoder", "decoder", 10), None),
+            _expect(_method("decoder", "feed", encoded), exception="ValueError"),
+            _expect(_method("decoder", "feed", "2:ok"), ["ok"]),
+        )
+        for index, encoded in enumerate(malformed)
+    )
+    return (
+        _case(
+            "multiple and empty frames",
+            _expect(_construct("LengthPrefixedDecoder", "decoder", 20), None),
+            _expect(_method("decoder", "feed", "3:abc0:5:hello"), ["abc", "", "hello"]),
+            _expect(_method("decoder", "finish"), None),
+        ),
+        _case(
+            "prefix and payload cross chunks",
+            _expect(_construct("LengthPrefixedDecoder", "decoder", 20), None),
+            _expect(_method("decoder", "feed", "1"), []),
+            _expect(_method("decoder", "feed", "1:hello"), []),
+            _expect(_method("decoder", "feed", " world"), ["hello world"]),
+        ),
+        _case(
+            "complete frames before incomplete tail",
+            _expect(_construct("LengthPrefixedDecoder", "decoder", 10), None),
+            _expect(_method("decoder", "feed", "1:a3:x"), ["a"]),
+            _expect(_method("decoder", "feed", "yz"), ["xyz"]),
+        ),
+        _case(
+            "empty feed",
+            _expect(_construct("LengthPrefixedDecoder", "decoder", 4), None),
+            _expect(_method("decoder", "feed", ""), []),
+            _expect(_method("decoder", "feed", "2:ok"), ["ok"]),
+        ),
+        *maximum_cases,
+        *malformed_cases,
+        _case(
+            "oversized partial prefix resets",
+            _expect(_construct("LengthPrefixedDecoder", "decoder", 3), None),
+            _expect(
+                _method("decoder", "feed", "4"),
+                exception="ValueError",
+                message="maximum",
+            ),
+            _expect(_method("decoder", "feed", "3:yes"), ["yes"]),
+        ),
+        _case(
+            "nonstring chunk preserves buffer",
+            _expect(_construct("LengthPrefixedDecoder", "decoder", 10), None),
+            _expect(_method("decoder", "feed", "3:a"), []),
+            _expect(_method("decoder", "feed", 1), exception="TypeError"),
+            _expect(_method("decoder", "feed", "bc"), ["abc"]),
+        ),
+        _case(
+            "finish rejects truncation and resets",
+            _expect(_construct("LengthPrefixedDecoder", "decoder", 10), None),
+            _expect(_method("decoder", "feed", "3:ab"), []),
+            _expect(
+                _method("decoder", "finish"),
+                exception="ValueError",
+                message="truncated",
+            ),
+            _expect(_method("decoder", "feed", "1:x"), ["x"]),
+        ),
+        _case(
+            "payload contains prefix characters and unicode",
+            _expect(_construct("LengthPrefixedDecoder", "decoder", 10), None),
+            _expect(_method("decoder", "feed", "4:a:🙂b"), ["a:🙂b"]),
+        ),
+    )
+
+
 OFFICIAL_CASES: Mapping[str, tuple[OfficialCase, ...]] = {
     "lru-cache": _lru_cases(),
     "ttl-cache": _ttl_cases(),
@@ -690,6 +1089,11 @@ OFFICIAL_CASES: Mapping[str, tuple[OfficialCase, ...]] = {
     "dependency-resolver": _dependency_cases(),
     "async-batch-processor": _async_cases(),
     "circuit-breaker": _circuit_cases(),
+    "structured-event-parser": _structured_event_cases(),
+    "interval-reservation": _interval_reservation_cases(),
+    "config-layer-merge": _config_layer_cases(),
+    "logical-path": _logical_path_cases(),
+    "frame-decoder": _frame_decoder_cases(),
 }
 
 OFFICIAL_TEST_CASE_COUNTS: Mapping[str, int] = {
@@ -766,4 +1170,9 @@ assert OFFICIAL_TEST_CASE_COUNTS == {
     "dependency-resolver": 12,
     "async-batch-processor": 6,
     "circuit-breaker": 7,
+    "structured-event-parser": 17,
+    "interval-reservation": 13,
+    "config-layer-merge": 12,
+    "logical-path": 10,
+    "frame-decoder": 17,
 }

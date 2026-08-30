@@ -11,27 +11,44 @@ and benchmark policy material.
 `codejudge-core@1` is the immutable original single-task LRU-cache dataset. It remains available so
 historical Phase 7 runs retain their meaning.
 
-`codejudge-core@2` is the current seven-task engineering portfolio. Its preserved historical
-fingerprint is:
+`codejudge-core@2` is the immutable seven-task engineering portfolio used by all currently
+published benchmark results. Its preserved historical fingerprint is:
 
 ```text
 ee0f631d6810c039e84d90d9f2b77f20dcabbe27bef0af600695ab9cb1111988
 ```
 
-The v2 tasks have equal weights:
+`codejudge-core@3` is the current twelve-task portfolio. It preserves all seven v2 task identities
+and adds five tasks for capabilities that v2 did not cover. Its fingerprint is:
 
-| Task | Engineering focus |
-| --- | --- |
-| LRU Cache | Data structures and recency state |
-| TTL Cache | Expiration, state, and eviction |
-| Sliding-Window Rate Limiter | Time-window algorithms and per-key state |
-| Retry Backoff | Deterministic reliability arithmetic |
-| Dependency Resolver | Graphs, cycles, and stable ordering |
-| Async Batch Processor | asyncio, bounded concurrency, and cleanup |
-| Circuit Breaker | Explicit reliability state machines |
+```text
+fcbc143e6b704588c6c3b4089104896dff06f1dcb3c5f21aab7c766a1bb4d80e
+```
 
-The portfolio intentionally spans stateful data structures, time, graphs, async coordination, and
-reliability state machines. A model cannot dominate through one narrow implementation pattern.
+All v2 and v3 tasks have equal weight `1.0`. Published v2 results are not v3 results and must not be
+presented as though they covered the expanded task set. No model leaderboard data was generated
+for v3 as part of the dataset implementation.
+
+## Capability portfolio
+
+| Task | State | Async | Parsing | Graph | Time | Algorithms | Error/edge-case focus |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| LRU Cache | Strong | — | — | — | — | Recency/eviction | Capacity and update ordering |
+| TTL Cache | Strong | — | — | — | Strong | Recency/expiry | Exact expiry boundary |
+| Sliding-Window Rate Limiter | Strong | — | — | — | Strong | Window pruning | Rejections and per-key order |
+| Retry Backoff | — | — | — | — | Moderate | Bounded arithmetic | Types, caps, and overflow avoidance |
+| Dependency Resolver | — | — | — | Strong | — | Stable topological sort | Cycles, duplicates, unknown leaves |
+| Async Batch Processor | Moderate | Strong | — | — | — | Bounded coordination | Failure/cancellation cleanup |
+| Circuit Breaker | Strong | — | — | — | Strong | State transitions | Probe boundaries and reset |
+| Structured Event Parser | — | — | Strong | — | Moderate | Validation/normalization | Malformed records, duplicates, order |
+| Interval Reservation | Strong | — | — | — | — | Half-open overlap | Adjacency, containment, cancellation |
+| Configuration Layer Merge | Moderate | — | — | — | — | Recursive transformation | Deletion, replacement, aliasing |
+| Logical Path | — | — | Moderate | — | — | Lexical normalization | Root traversal and separators |
+| Frame Decoder | Strong | — | Strong | — | — | Incremental state machine | Chunking, truncation, bounded frames |
+
+The v3 portfolio materially broadens v2's state, time, graph, async, and reliability coverage with
+structured validation, interval boundaries, recursive transformations, lexical path rules, and
+streaming parser state. A model cannot dominate through one narrow implementation pattern.
 
 ## Public prompt and private evidence
 

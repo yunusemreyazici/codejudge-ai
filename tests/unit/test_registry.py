@@ -14,10 +14,15 @@ def test_default_registry_loads_complete_task_portfolio() -> None:
     assert [task.id for task in tasks] == [
         "async-batch-processor",
         "circuit-breaker",
+        "config-layer-merge",
         "dependency-resolver",
+        "frame-decoder",
+        "interval-reservation",
+        "logical-path",
         "lru-cache",
         "rate-limiter",
         "retry-backoff",
+        "structured-event-parser",
         "ttl-cache",
     ]
     assert registry.get("lru-cache").specification.entrypoint == "solution:LRUCache"

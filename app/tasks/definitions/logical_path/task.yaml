@@ -1,0 +1,9 @@
+{
+  "id": "logical-path",
+  "title": "Logical POSIX Path Normalizer",
+  "description": "Implement normalize_path(path: str, cwd: str = '/') -> str using lexical POSIX-style rules only; do not access the filesystem. path and cwd must be nonempty strings, otherwise raise ValueError. cwd must be absolute, otherwise raise ValueError. An absolute path ignores cwd; a relative path starts from cwd. Collapse repeated '/', ignore '.', and resolve '..' by removing the preceding component. Raise ValueError if cwd or the resolved path would traverse above '/'. Return an absolute canonical path with no trailing slash except for '/'. Backslash is an ordinary character, not a separator. Symbolic links and platform-specific path rules are out of scope.",
+  "language": "python",
+  "entrypoint": "solution:normalize_path",
+  "timeout_seconds": 5.0,
+  "version": "1.0"
+}

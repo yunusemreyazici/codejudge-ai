@@ -1,0 +1,92 @@
+{
+  "dataset_id": "codejudge-core",
+  "dataset_version": "3",
+  "title": "CodeJudge Core v3",
+  "description": "A twelve-task deterministic software-engineering benchmark expanding coverage across parsing, intervals, recursive transformations, logical paths, and streaming state.",
+  "task_entries": [
+    {
+      "task_id": "lru-cache",
+      "task_version": "1.0",
+      "task_fingerprint": "36326c717bf1133e4350f8aad230145ffa008c17c06697faca0dfcffd6789ab7",
+      "tests_fingerprint": "54786520687b887b982ed804ff483f599607ced06f09dd04706f66316dcb7c5b",
+      "weight": 1.0
+    },
+    {
+      "task_id": "ttl-cache",
+      "task_version": "1.0",
+      "task_fingerprint": "986a67c2492086473e206521b47a2dce9a82c81ab5509c322a4e7a10479722b3",
+      "tests_fingerprint": "96bc0c57b021c274b0cdc8264daf6855e239172cb07ec919f9adc9621afe832c",
+      "weight": 1.0
+    },
+    {
+      "task_id": "rate-limiter",
+      "task_version": "1.0",
+      "task_fingerprint": "8fa788f2335cb904651617584730b270fdf0622e778cc9793b571668f88b7be4",
+      "tests_fingerprint": "cbfe634e3847d082e634a936b8d44eadddf4c88d2e1504596112c5a7f25bf54c",
+      "weight": 1.0
+    },
+    {
+      "task_id": "retry-backoff",
+      "task_version": "1.0",
+      "task_fingerprint": "8ccf22ace44938c627a4ce842d91d27844b0ff1d66cd8bdd6b91564a3f47d99e",
+      "tests_fingerprint": "f42dfd9fe12343865daff18202a010ab324c17f7f99b40c809b7bc64006c7567",
+      "weight": 1.0
+    },
+    {
+      "task_id": "dependency-resolver",
+      "task_version": "1.0",
+      "task_fingerprint": "cfcc510c677ebb4d90f49594f413803f8634dc01d4cb60c0362cce11e376e83b",
+      "tests_fingerprint": "9446347072c3b10b3a8f468bd6484e6e7332ea9e4b434691271170d9500f458c",
+      "weight": 1.0
+    },
+    {
+      "task_id": "async-batch-processor",
+      "task_version": "1.0",
+      "task_fingerprint": "98f1782f22c1a5341ae3aa30bb04c9befdaa93e974e6c471145836860577b9a1",
+      "tests_fingerprint": "82129e90b0156a00461d1f69a9a7dcc83ca80c0c054a48d0037d47aa167bfedd",
+      "weight": 1.0
+    },
+    {
+      "task_id": "circuit-breaker",
+      "task_version": "1.0",
+      "task_fingerprint": "64dcb0fea94ec7f0dccc74ee6bbc4319e06997c67d38670bab0f46ee41c37ed3",
+      "tests_fingerprint": "21000a786964f16e0167b90bcc37f18f689311c95021ba73dbdcbc2437fbbad7",
+      "weight": 1.0
+    },
+    {
+      "task_id": "structured-event-parser",
+      "task_version": "1.0",
+      "task_fingerprint": "6c6e85c8b155c7ea010c9cd649a6f319f6af79b014973a5f652fdd7d5fe83031",
+      "tests_fingerprint": "be0c453b8a2e43b47155c273c790fc008f6adbb2d40c268aececbc49b992fd4f",
+      "weight": 1.0
+    },
+    {
+      "task_id": "interval-reservation",
+      "task_version": "1.0",
+      "task_fingerprint": "bf432b76f3feb3434628347072c61a0996441d33d7048a18865596de1225c125",
+      "tests_fingerprint": "0d775029df37dc731164c5b3adb0fa408a23ea7fb88ad5067fc40cb46bde30f9",
+      "weight": 1.0
+    },
+    {
+      "task_id": "config-layer-merge",
+      "task_version": "1.0",
+      "task_fingerprint": "174aff54c17a312cf7d8c887feb49807a60a8f638cd7a4e092573116ca242c3c",
+      "tests_fingerprint": "449c009c4fd9f63612ec0cc1eb2306df17cd3921cc05a77ecb1848c9139fd294",
+      "weight": 1.0
+    },
+    {
+      "task_id": "logical-path",
+      "task_version": "1.0",
+      "task_fingerprint": "e04fcf94a03b5b488352d7df9785f6bd7fcdc378fddffc4c129ae4c6fd7af6ad",
+      "tests_fingerprint": "4831548979a378974077e835548a284488494a255344cfdd88f8fd51ce6d6d9b",
+      "weight": 1.0
+    },
+    {
+      "task_id": "frame-decoder",
+      "task_version": "1.0",
+      "task_fingerprint": "ebab75405abb861ff2970ce786c7af2d82aad56dc67d6d0169ef529e1652e613",
+      "tests_fingerprint": "04a2163e2182da736e1a1e7c3e96840f9e2cf38239704ff77850f1092dd920e0",
+      "weight": 1.0
+    }
+  ]
+}

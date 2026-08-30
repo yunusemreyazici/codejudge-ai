@@ -101,6 +101,10 @@ See [scoring](docs/evaluation/scoring.md), [correctness](docs/evaluation/correct
 The latest completed broad screening runs used `codejudge-core@2`, a seven-task engineering
 portfolio. The headline is the eligible winner under the strict completeness policy.
 
+`codejudge-core@3` expands the available portfolio to twelve tasks. The published results below
+remain historical v2 results and are not results for the expanded dataset; no model/provider runs
+were made to populate v3 during the dataset implementation.
+
 | Benchmark | Eligible winner | Primary mean | Generation success | Evaluation coverage |
 | --- | --- | ---: | ---: | ---: |
 | ClinePass, 12 models | GLM-5.2 | 90.49 | 100.0% | 100.0% |

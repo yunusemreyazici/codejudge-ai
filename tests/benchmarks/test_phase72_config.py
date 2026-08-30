@@ -58,6 +58,24 @@ def test_example_config_plans_fourteen_generations_without_provider_calls() -> N
     assert {model.max_concurrent_requests for model in plan.models} == {None}
 
 
+def test_selected_dataset_version_controls_task_and_generation_count() -> None:
+    historical = load_benchmark_config(EXAMPLE)
+    expanded = historical.model_copy(
+        update={"dataset": historical.dataset.model_copy(update={"version": "3"})}
+    )
+
+    historical_plan = build_plan(historical, environment={})
+    expanded_plan = build_plan(expanded, environment={})
+
+    assert historical_plan.dataset_version == "2"
+    assert historical_plan.task_count == 7
+    assert historical_plan.planned_generations == 14
+    assert expanded_plan.dataset_version == "3"
+    assert expanded_plan.task_count == 12
+    assert expanded_plan.planned_generations == 24
+    assert expanded_plan.dataset_fingerprint != historical_plan.dataset_fingerprint
+
+
 def test_unknown_pricing_is_not_zero_and_prevents_budget_enforcement() -> None:
     config = load_benchmark_config(EXAMPLE)
     config = config.model_copy(update={"pricing": {}})

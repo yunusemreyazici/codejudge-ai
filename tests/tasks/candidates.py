@@ -1,6 +1,76 @@
 """Deliberately flawed candidates used to prove portfolio tests are discriminating."""
 
 INCORRECT_CANDIDATES = {
+    "structured-event-parser": """
+import json
+
+
+def parse_events(lines):
+    result = []
+    for line in lines:
+        if not line.strip():
+            continue
+        event = json.loads(line)
+        event.setdefault("payload", {})
+        result.append(event)
+    return result
+""".lstrip(),
+    "interval-reservation": """
+class ReservationBook:
+    def __init__(self):
+        self.items = {}
+
+    def reserve(self, reservation_id, resource, start, end):
+        for existing_id, (existing_resource, existing_start, existing_end) in self.items.items():
+            endpoints_overlap = start in range(existing_start, existing_end) or end in range(
+                existing_start, existing_end
+            )
+            if existing_resource == resource and endpoints_overlap:
+                return False
+        self.items[reservation_id] = (resource, start, end)
+        return True
+
+    def cancel(self, reservation_id):
+        return self.items.pop(reservation_id, None) is not None
+
+    def reservations(self, resource):
+        return [
+            {"id": reservation_id, "start": start, "end": end}
+            for reservation_id, (item_resource, start, end) in self.items.items()
+            if item_resource == resource
+        ]
+""".lstrip(),
+    "config-layer-merge": """
+def merge_config_layers(layers):
+    result = {}
+    for layer in layers:
+        result.update(layer)
+    return result
+""".lstrip(),
+    "logical-path": """
+import posixpath
+
+
+def normalize_path(path, cwd="/"):
+    if path.startswith("/"):
+        return posixpath.normpath(path)
+    return posixpath.normpath(posixpath.join(cwd, path))
+""".lstrip(),
+    "frame-decoder": """
+class LengthPrefixedDecoder:
+    def __init__(self, max_frame_size):
+        self.max_frame_size = max_frame_size
+
+    def feed(self, chunk):
+        prefix, payload = chunk.split(":", 1)
+        length = int(prefix)
+        if length > self.max_frame_size:
+            raise ValueError("too large")
+        return [payload[:length]]
+
+    def finish(self):
+        return None
+""".lstrip(),
     "ttl-cache": """
 class TTLCache:
     def __init__(self, capacity):

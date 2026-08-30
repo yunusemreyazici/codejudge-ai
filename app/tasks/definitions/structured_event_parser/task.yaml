@@ -1,0 +1,9 @@
+{
+  "id": "structured-event-parser",
+  "title": "Validated Structured Event Parser",
+  "description": "Implement parse_events(lines: list[str]) -> list[dict[str, object]]. Each nonblank line is one JSON object with exactly the required fields id, timestamp, and kind plus the optional field payload. id must be a nonempty string, timestamp a nonnegative non-boolean integer, kind one of created, updated, or deleted, and payload a JSON object that defaults to {}. Blank lines are ignored. Event IDs must be unique and timestamps must be nondecreasing in parsed order. Return normalized dictionaries in input order with keys id, timestamp, kind, and payload. Raise TypeError when lines is not a list, an item is not a string, or a decoded line is not an object. Raise ValueError for malformed JSON or any other contract violation. Do not mutate the input.",
+  "language": "python",
+  "entrypoint": "solution:parse_events",
+  "timeout_seconds": 5.0,
+  "version": "1.0"
+}
