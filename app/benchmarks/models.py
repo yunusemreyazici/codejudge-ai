@@ -271,6 +271,7 @@ class BenchmarkSampleSummary(BaseModel):
     currency: str | None = None
     evaluation_id: UUID | None = None
     failure_code: str | None = None
+    failure_detail_code: str | None = None
 
 
 class BenchmarkSampleDetail(BenchmarkSampleSummary):
@@ -317,6 +318,7 @@ class GenerationReliabilitySummary(BaseModel):
     generation_failures: int = Field(ge=0)
     generation_success_rate: float = Field(ge=0, le=1)
     failure_categories: dict[str, int]
+    failure_details: dict[str, dict[str, int]] = Field(default_factory=dict)
 
 
 class ReliabilitySummary(BaseModel):

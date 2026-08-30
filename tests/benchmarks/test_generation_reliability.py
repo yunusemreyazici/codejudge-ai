@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from app.benchmarks.reliability import (
     GENERATION_FAILURE_CATEGORY_ORDER,
+    UNKNOWN_FAILURE_DETAIL,
+    decode_failure_diagnostic,
+    encode_failure_diagnostic,
     generation_failure_category_counts,
+    generation_failure_detail_counts,
     normalize_generation_failure,
 )
 from app.benchmarks.worker import _generation_failure_code
@@ -42,6 +46,53 @@ def test_failure_category_counts_have_deterministic_documented_order() -> None:
         "malformed_output": 1,
         "unknown": 1,
     }
+
+
+def test_sanitized_failure_details_round_trip_without_changing_public_taxonomy() -> None:
+    persisted = [
+        encode_failure_diagnostic("malformed_provider_response", "missing_choices"),
+        encode_failure_diagnostic("malformed_provider_response", "null_content"),
+        encode_failure_diagnostic("malformed_provider_response", "reasoning_only"),
+        encode_failure_diagnostic("malformed_provider_response", "unsupported_content_type"),
+        "malformed_provider_response",
+        encode_failure_diagnostic("provider_refusal", "refusal"),
+    ]
+
+    assert [normalize_generation_failure(value) for value in persisted] == [
+        "invalid_response",
+        "invalid_response",
+        "invalid_response",
+        "invalid_response",
+        "invalid_response",
+        "provider_error",
+    ]
+    assert generation_failure_detail_counts(persisted) == {
+        "provider_error": {"refusal": 1},
+        "invalid_response": {
+            "missing_choices": 1,
+            "null_content": 1,
+            "reasoning_only": 1,
+            "unsupported_content_type": 1,
+            UNKNOWN_FAILURE_DETAIL: 1,
+        },
+    }
+
+
+def test_failure_detail_encoding_is_allowlisted_bounded_and_secret_free() -> None:
+    unsafe_values = [
+        "raw assistant content",
+        "hidden reasoning",
+        '{"tool":{"arguments":"secret"}}',
+        "system prompt",
+        "Authorization: Bearer secret-key",
+    ]
+
+    for unsafe in unsafe_values:
+        persisted = encode_failure_diagnostic("malformed_provider_response", unsafe)
+        assert persisted == "malformed_provider_response"
+        assert unsafe not in persisted
+        assert decode_failure_diagnostic(persisted).detail_code is None
+        assert len(persisted) <= 128
 
 
 def test_worker_preserves_sanitized_typed_codes_and_generic_errors_are_not_unavailable() -> None:

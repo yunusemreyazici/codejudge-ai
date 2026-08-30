@@ -32,6 +32,7 @@ from app.benchmarks.models import (
 )
 from app.benchmarks.pricing import PricingCatalog
 from app.benchmarks.prompts import CODING_PROMPT_HASH, model_coding_prompt_hash
+from app.benchmarks.reliability import decode_failure_diagnostic
 from app.benchmarks.repositories import BenchmarkRepository, BenchmarkResultRow
 from app.benchmarks.statistics import build_leaderboard
 from app.core.config import (
@@ -319,6 +320,7 @@ class BenchmarkService:
 
 def _summary(row: BenchmarkResultRow) -> BenchmarkSampleSummary:
     artifact = row.artifact
+    failure = decode_failure_diagnostic(row.sample.failure_code)
     return BenchmarkSampleSummary(
         benchmark_sample_id=row.sample.benchmark_sample_id,
         model_config_id=row.sample.model_config_id,
@@ -338,7 +340,8 @@ def _summary(row: BenchmarkResultRow) -> BenchmarkSampleSummary:
             if row.sample.status is BenchmarkSampleStatus.COMPLETED
             else None
         ),
-        failure_code=row.sample.failure_code,
+        failure_code=failure.code,
+        failure_detail_code=failure.detail_code,
     )
 
 

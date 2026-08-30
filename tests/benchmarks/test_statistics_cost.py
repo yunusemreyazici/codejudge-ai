@@ -517,6 +517,7 @@ def test_generation_reliability_distinguishes_full_partial_and_unavailable_model
         "generation_failures": 0,
         "generation_success_rate": 1,
         "failure_categories": {},
+        "failure_details": {},
     }
     assert entries["partial"].reliability.generation.model_dump() == {
         "planned_generations": 2,
@@ -524,6 +525,7 @@ def test_generation_reliability_distinguishes_full_partial_and_unavailable_model
         "generation_failures": 1,
         "generation_success_rate": 0.5,
         "failure_categories": {"rate_limited": 1},
+        "failure_details": {"rate_limited": {"unknown_detail": 1}},
     }
     assert entries["unavailable"].reliability.generation.model_dump() == {
         "planned_generations": 2,
@@ -531,4 +533,8 @@ def test_generation_reliability_distinguishes_full_partial_and_unavailable_model
         "generation_failures": 2,
         "generation_success_rate": 0,
         "failure_categories": {"provider_unavailable": 1, "provider_timeout": 1},
+        "failure_details": {
+            "provider_unavailable": {"unknown_detail": 1},
+            "provider_timeout": {"unknown_detail": 1},
+        },
     }

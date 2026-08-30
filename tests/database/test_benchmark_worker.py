@@ -71,7 +71,18 @@ async def test_fake_models_generate_evaluate_fail_and_rank_without_zero_imputati
                 output_cost_per_million_tokens=Decimal("8"),
                 currency="USD",
             )
-            for model in ("good", "bad", "refusal", "malformed", "oversized")
+            for model in (
+                "good",
+                "bad",
+                "refusal",
+                "malformed",
+                "oversized",
+                "invalid-missing",
+                "invalid-null",
+                "invalid-reasoning",
+                "invalid-unsupported",
+                "invalid-no-detail",
+            )
         }
     )
     service = BenchmarkService(
@@ -91,6 +102,11 @@ async def test_fake_models_generate_evaluate_fail_and_rank_without_zero_imputati
                 BenchmarkModelRequest(provider_id="fake", model="refusal"),
                 BenchmarkModelRequest(provider_id="fake", model="malformed"),
                 BenchmarkModelRequest(provider_id="fake", model="oversized"),
+                BenchmarkModelRequest(provider_id="fake", model="invalid-missing"),
+                BenchmarkModelRequest(provider_id="fake", model="invalid-null"),
+                BenchmarkModelRequest(provider_id="fake", model="invalid-reasoning"),
+                BenchmarkModelRequest(provider_id="fake", model="invalid-unsupported"),
+                BenchmarkModelRequest(provider_id="fake", model="invalid-no-detail"),
             ],
             samples_per_task=1,
         ),
@@ -102,13 +118,38 @@ async def test_fake_models_generate_evaluate_fail_and_rank_without_zero_imputati
     provider.add(
         "coding_generation",
         "refusal",
-        [ProviderError("provider_refusal")],
+        [ProviderError("provider_refusal", detail_code="refusal")],
     )
     provider.add("coding_generation", "malformed", ["```python\nnot structured"])
     provider.add(
         "coding_generation",
         "oversized",
         [{"language": "python", "source": "x" * (settings.max_code_size + 1)}],
+    )
+    provider.add(
+        "coding_generation",
+        "invalid-missing",
+        [ProviderError("malformed_provider_response", detail_code="missing_choices")],
+    )
+    provider.add(
+        "coding_generation",
+        "invalid-null",
+        [ProviderError("malformed_provider_response", detail_code="null_content")],
+    )
+    provider.add(
+        "coding_generation",
+        "invalid-reasoning",
+        [ProviderError("malformed_provider_response", detail_code="reasoning_only")],
+    )
+    provider.add(
+        "coding_generation",
+        "invalid-unsupported",
+        [ProviderError("malformed_provider_response", detail_code="unsupported_content_type")],
+    )
+    provider.add(
+        "coding_generation",
+        "invalid-no-detail",
+        [ProviderError("malformed_provider_response")],
     )
     queue = FakeBenchmarkQueue()
     worker = BenchmarkWorker(
@@ -145,12 +186,17 @@ async def test_fake_models_generate_evaluate_fail_and_rank_without_zero_imputati
 
     assert summary.status.value == "completed"
     assert summary.completed_samples == 2
-    assert summary.generation_failures == 3
+    assert summary.generation_failures == 8
     assert [entry.model for entry in leaderboard[:2]] == ["good", "bad"]
     assert {entry.model for entry in leaderboard[2:]} == {
         "refusal",
         "malformed",
         "oversized",
+        "invalid-missing",
+        "invalid-null",
+        "invalid-reasoning",
+        "invalid-unsupported",
+        "invalid-no-detail",
     }
     assert leaderboard[0].weighted_mean_score == 100
     assert leaderboard[0].correctness_pass_rate == 1
@@ -167,11 +213,29 @@ async def test_fake_models_generate_evaluate_fail_and_rank_without_zero_imputati
     assert refusal.status is BenchmarkSampleStatus.GENERATION_FAILED
     assert refusal.deterministic_score is None
     assert refusal.failure_code == "provider_refusal"
+    assert refusal.failure_detail_code == "refusal"
     malformed = next(sample for sample in samples if sample.model == "malformed")
     oversized = next(sample for sample in samples if sample.model == "oversized")
     assert malformed.failure_code == "malformed_output"
     assert oversized.failure_code == "output_too_large"
-    assert len(provider.requests) == 5
+    expected_details = {
+        "invalid-missing": "missing_choices",
+        "invalid-null": "null_content",
+        "invalid-reasoning": "reasoning_only",
+        "invalid-unsupported": "unsupported_content_type",
+        "invalid-no-detail": None,
+    }
+    for model, expected_detail in expected_details.items():
+        failed = next(sample for sample in samples if sample.model == model)
+        assert failed.failure_code == "malformed_provider_response"
+        assert failed.failure_detail_code == expected_detail
+        persisted = await database_harness.benchmark_repository.get_sample(
+            failed.benchmark_sample_id
+        )
+        assert persisted is not None
+        expected_suffix = "" if expected_detail is None else f"::{expected_detail}"
+        assert persisted.failure_code == f"malformed_provider_response{expected_suffix}"
+    assert len(provider.requests) == 10
 
     snapshot_recovery = await service.create(
         BenchmarkCreateRequest(
@@ -352,4 +416,4 @@ async def test_fake_models_generate_evaluate_fail_and_rank_without_zero_imputati
                 benchmark_sample_id=row.benchmark_sample_id,
             )
         )
-    assert len(provider.requests) == 5
+    assert len(provider.requests) == 10

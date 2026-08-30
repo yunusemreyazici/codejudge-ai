@@ -20,6 +20,7 @@ from app.benchmarks.exporting import (
 from app.benchmarks.models import BenchmarkRunStatus, BenchmarkSampleStatus
 from app.benchmarks.reliability import (
     GENERATION_FAILURE_CATEGORY_ORDER,
+    UNKNOWN_FAILURE_DETAIL,
     generation_failure_category_counts,
 )
 from app.benchmarks.repositories import BenchmarkRepository
@@ -182,6 +183,26 @@ def render_run_show(artifacts: BenchmarkArtifacts) -> str:
             f"{reliability['generation_failures']} | "
             f"{_failure_breakdown(reliability['failure_categories'])} |"
         )
+    lines.extend(
+        [
+            "",
+            "Generation failure diagnostics",
+            "| Model | Failure category | Detail | Count |",
+            "| --- | --- | --- | ---: |",
+        ]
+    )
+    found_diagnostics = False
+    for model in document["models"]:
+        reliability = _generation_reliability(model)
+        for category, details in reliability["failure_details"].items():
+            for detail, count in details.items():
+                found_diagnostics = True
+                lines.append(
+                    f"| {_cell(model['display_name'])} | {_cell(category)} | "
+                    f"{_cell(detail)} | {count} |"
+                )
+    if not found_diagnostics:
+        lines.append("| none | none | none | 0 |")
     return "\n".join(lines)
 
 
@@ -856,13 +877,20 @@ def _generation_reliability(model: Mapping[str, Any]) -> dict[str, Any]:
     explicit = model.get("generation_reliability")
     if isinstance(explicit, Mapping):
         categories = explicit.get("failure_categories")
+        ordered_categories = (
+            _ordered_failure_categories(categories) if isinstance(categories, Mapping) else {}
+        )
+        details = explicit.get("failure_details")
         return {
             "planned_generations": int(explicit["planned_generations"]),
             "successful_generations": int(explicit["successful_generations"]),
             "generation_failures": int(explicit["generation_failures"]),
             "generation_success_rate": float(explicit["generation_success_rate"]),
-            "failure_categories": (
-                _ordered_failure_categories(categories) if isinstance(categories, Mapping) else {}
+            "failure_categories": ordered_categories,
+            "failure_details": (
+                _ordered_failure_details(details)
+                if isinstance(details, Mapping)
+                else _unknown_failure_details(ordered_categories)
             ),
         }
 
@@ -888,6 +916,7 @@ def _generation_reliability(model: Mapping[str, Any]) -> dict[str, Any]:
         "generation_failures": failure_count,
         "generation_success_rate": _ratio(generated, planned),
         "failure_categories": _ordered_failure_categories(normalized),
+        "failure_details": _unknown_failure_details(_ordered_failure_categories(normalized)),
     }
 
 
@@ -896,6 +925,33 @@ def _ordered_failure_categories(categories: Mapping[str, Any]) -> dict[str, int]
         category: int(categories[category])
         for category in GENERATION_FAILURE_CATEGORY_ORDER
         if int(categories.get(category, 0)) > 0
+    }
+
+
+def _ordered_failure_details(details: Mapping[str, Any]) -> dict[str, dict[str, int]]:
+    ordered: dict[str, dict[str, int]] = {}
+    for category in GENERATION_FAILURE_CATEGORY_ORDER:
+        raw_category = details.get(category)
+        if not isinstance(raw_category, Mapping):
+            continue
+        category_counts = {
+            str(detail): int(count)
+            for detail, count in sorted(
+                raw_category.items(),
+                key=lambda item: (str(item[0]) == UNKNOWN_FAILURE_DETAIL, str(item[0])),
+            )
+            if int(count) > 0
+        }
+        if category_counts:
+            ordered[category] = category_counts
+    return ordered
+
+
+def _unknown_failure_details(categories: Mapping[str, Any]) -> dict[str, dict[str, int]]:
+    return {
+        category: {UNKNOWN_FAILURE_DETAIL: int(count)}
+        for category, count in categories.items()
+        if int(count) > 0
     }
 
 

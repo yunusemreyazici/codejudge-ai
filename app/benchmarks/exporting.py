@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from decimal import Decimal
@@ -25,7 +25,10 @@ from app.benchmarks.models import (
 from app.benchmarks.prompts import CODING_PROMPT_HASH
 from app.benchmarks.reliability import (
     GENERATION_FAILURE_CATEGORY_ORDER,
+    UNKNOWN_FAILURE_DETAIL,
+    decode_failure_diagnostic,
     generation_failure_category_counts,
+    generation_failure_detail_counts,
 )
 from app.benchmarks.repositories import BenchmarkRepository, BenchmarkResultRow
 from app.benchmarks.statistics import build_leaderboard, is_correct_evaluation, metric_summary
@@ -345,6 +348,7 @@ def render_report(artifacts: BenchmarkArtifacts) -> str:
         lines.extend(_correctness_consistency_section(leaderboard))
         lines.extend(_variable_tasks_section(document["per_task"]))
     lines.extend(_generation_reliability_section(models))
+    lines.extend(_generation_failure_diagnostics_section(models))
     lines.extend(_reliability_section(models))
     lines.extend(_cost_section(models, document["evaluator"]))
     lines.extend(_latency_section(models))
@@ -370,6 +374,7 @@ def _sample_document(
     candidate_path: str | None,
 ) -> dict[str, Any]:
     artifact = row.artifact
+    failure = decode_failure_diagnostic(row.sample.failure_code)
     return {
         "benchmark_sample_id": row.sample.benchmark_sample_id,
         "model_config_id": row.sample.model_config_id,
@@ -381,7 +386,8 @@ def _sample_document(
         "tests_fingerprint": row.sample.tests_fingerprint,
         "sample_index": row.sample.sample_index,
         "status": row.sample.status,
-        "failure_code": row.sample.failure_code,
+        "failure_code": failure.code,
+        "failure_detail_code": failure.detail_code,
         "generation": (
             None
             if artifact is None
@@ -457,8 +463,9 @@ def _model_document(
     end_to_end_successes = [row for row in correct if row.artifact is not None]
     failures: dict[str, int] = {}
     for row in selected:
-        if row.sample.failure_code:
-            failures[row.sample.failure_code] = failures.get(row.sample.failure_code, 0) + 1
+        failure_code = decode_failure_diagnostic(row.sample.failure_code).code
+        if failure_code:
+            failures[failure_code] = failures.get(failure_code, 0) + 1
     tokens = {
         "input": _known_sum([row.artifact.input_tokens for row in generated if row.artifact]),
         "output": _known_sum([row.artifact.output_tokens for row in generated if row.artifact]),
@@ -544,6 +551,9 @@ def _model_document(
         "generation_failures": len(generation_failures),
         "generation_success_rate": len(generated) / len(selected) if selected else 0,
         "failure_categories": generation_failure_category_counts(
+            row.sample.failure_code for row in generation_failures
+        ),
+        "failure_details": generation_failure_detail_counts(
             row.sample.failure_code for row in generation_failures
         ),
     }
@@ -712,19 +722,30 @@ def _per_task_documents(leaderboard: list[Any]) -> list[dict[str, Any]]:
 
 
 def _failure_documents(rows: list[BenchmarkResultRow]) -> list[dict[str, Any]]:
-    counts: dict[tuple[str, str, str], int] = {}
+    counts: dict[tuple[str, str, str, str | None], int] = {}
     for row in rows:
-        if row.sample.failure_code is None:
+        failure = decode_failure_diagnostic(row.sample.failure_code)
+        if failure.code is None:
             continue
-        key = (row.config.provider_id, row.config.model, row.sample.failure_code)
+        key = (row.config.provider_id, row.config.model, failure.code, failure.detail_code)
         counts[key] = counts.get(key, 0) + 1
     return [
-        {"provider_id": key[0], "model": key[1], "failure_code": key[2], "count": count}
-        for key, count in sorted(counts.items())
+        {
+            "provider_id": key[0],
+            "model": key[1],
+            "failure_code": key[2],
+            "failure_detail_code": key[3],
+            "count": count,
+        }
+        for key, count in sorted(
+            counts.items(),
+            key=lambda item: tuple("" if value is None else value for value in item[0]),
+        )
     ]
 
 
 def _totals(rows: list[BenchmarkResultRow]) -> dict[str, Any]:
+    failure_codes = [decode_failure_diagnostic(row.sample.failure_code).code for row in rows]
     return {
         "recorded_samples": len(rows),
         "completed_samples": sum(
@@ -736,18 +757,13 @@ def _totals(rows: list[BenchmarkResultRow]) -> dict[str, Any]:
         "evaluation_failures": sum(
             row.sample.status is BenchmarkSampleStatus.EVALUATION_FAILED for row in rows
         ),
-        "provider_refusals": sum(row.sample.failure_code == "provider_refusal" for row in rows),
-        "provider_timeouts": sum(row.sample.failure_code == "provider_timeout" for row in rows),
-        "rate_limit_failures": sum(
-            row.sample.failure_code == "provider_rate_limited" for row in rows
-        ),
+        "provider_refusals": failure_codes.count("provider_refusal"),
+        "provider_timeouts": failure_codes.count("provider_timeout"),
+        "rate_limit_failures": failure_codes.count("provider_rate_limited"),
         "malformed_responses": sum(
-            row.sample.failure_code in {"malformed_output", "malformed_provider_response"}
-            for row in rows
+            code in {"malformed_output", "malformed_provider_response"} for code in failure_codes
         ),
-        "provider_unavailable": sum(
-            row.sample.failure_code == "provider_unavailable" for row in rows
-        ),
+        "provider_unavailable": failure_codes.count("provider_unavailable"),
     }
 
 
@@ -988,6 +1004,31 @@ def _generation_reliability_section(models: list[dict[str, Any]]) -> list[str]:
     return [*lines, ""]
 
 
+def _generation_failure_diagnostics_section(models: list[dict[str, Any]]) -> list[str]:
+    lines = [
+        "## Generation Failure Diagnostics",
+        "",
+        "Details are bounded sanitized reason tokens. Historical failures recorded before "
+        "detail persistence are shown as `unknown_detail`; no response content is reconstructed.",
+        "",
+        "| Model | Failure category | Detail | Count |",
+        "| --- | --- | --- | ---: |",
+    ]
+    found = False
+    for model in models:
+        reliability = _generation_reliability(model)
+        for category, details in reliability["failure_details"].items():
+            for detail, count in details.items():
+                found = True
+                lines.append(
+                    f"| {_cell(model['display_name'])} | {_cell(category)} | "
+                    f"{_cell(detail)} | {count} |"
+                )
+    if not found:
+        lines.append("| none | none | none | 0 |")
+    return [*lines, ""]
+
+
 def _cost_section(models: list[dict[str, Any]], evaluator: dict[str, Any]) -> list[str]:
     lines = [
         "## Cost Distribution",
@@ -1073,11 +1114,18 @@ def _failure_section(failures: list[dict[str, Any]]) -> list[str]:
     lines = ["## Failures & Refusals", ""]
     if not failures:
         return [*lines, "No terminal generation or evaluation failures were recorded.", ""]
-    lines.extend(["| Provider | Model | Safe failure code | Count |", "| --- | --- | --- | ---: |"])
+    lines.extend(
+        [
+            "| Provider | Model | Safe failure code | Detail | Count |",
+            "| --- | --- | --- | --- | ---: |",
+        ]
+    )
     for item in failures:
         lines.append(
             f"| {_cell(item['provider_id'])} | {_cell(item['model'])} | "
-            f"`{_cell(item['failure_code'])}` | {item['count']} |"
+            f"`{_cell(item['failure_code'])}` | "
+            f"`{_cell(item.get('failure_detail_code') or UNKNOWN_FAILURE_DETAIL)}` | "
+            f"{item['count']} |"
         )
     return [*lines, ""]
 
@@ -1258,7 +1306,13 @@ def _failure_breakdown(categories: dict[str, int]) -> str:
 def _generation_reliability(model: dict[str, Any]) -> dict[str, Any]:
     explicit = model.get("generation_reliability")
     if isinstance(explicit, dict):
-        return explicit
+        reliability = dict(explicit)
+        if not isinstance(reliability.get("failure_details"), dict):
+            categories = reliability.get("failure_categories")
+            reliability["failure_details"] = _unknown_failure_details(
+                categories if isinstance(categories, dict) else {}
+            )
+        return reliability
     planned = int(model.get("planned_samples", 0))
     generated = int(model.get("successful_generations", 0))
     failures = int(model.get("generation_failures", 0))
@@ -1284,6 +1338,15 @@ def _generation_reliability(model: dict[str, Any]) -> dict[str, Any]:
         "generation_failures": failures,
         "generation_success_rate": generated / planned if planned else 0,
         "failure_categories": ordered,
+        "failure_details": _unknown_failure_details(ordered),
+    }
+
+
+def _unknown_failure_details(categories: Mapping[Any, Any]) -> dict[str, dict[str, int]]:
+    return {
+        str(category): {UNKNOWN_FAILURE_DETAIL: int(count)}
+        for category, count in categories.items()
+        if int(count) > 0
     }
 
 

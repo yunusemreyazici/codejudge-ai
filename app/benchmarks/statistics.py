@@ -21,7 +21,11 @@ from app.benchmarks.models import (
     PerTaskMetrics,
     ReliabilitySummary,
 )
-from app.benchmarks.reliability import generation_failure_category_counts
+from app.benchmarks.reliability import (
+    decode_failure_diagnostic,
+    generation_failure_category_counts,
+    generation_failure_detail_counts,
+)
 from app.benchmarks.repositories import BenchmarkResultRow
 from app.runners.trusted_harness import OFFICIAL_TEST_CASE_COUNTS
 
@@ -155,7 +159,12 @@ def _entry(config: BenchmarkModelConfig, samples: list[BenchmarkResultRow]) -> L
         tasks_with_incomplete_coverage=sum(not task.coverage_complete for task in per_task),
         tasks_without_completed_evaluations=sum(task.completed_samples == 0 for task in per_task),
     )
-    failure_codes = [item.sample.failure_code for item in samples]
+    failure_codes = [decode_failure_diagnostic(item.sample.failure_code).code for item in samples]
+    generation_failure_codes = [
+        item.sample.failure_code
+        for item in samples
+        if item.status is BenchmarkSampleStatus.GENERATION_FAILED
+    ]
     reliability = ReliabilitySummary(
         planned_samples=planned,
         successful_generations=len(generated),
@@ -179,11 +188,8 @@ def _entry(config: BenchmarkModelConfig, samples: list[BenchmarkResultRow]) -> L
                 item.status is BenchmarkSampleStatus.GENERATION_FAILED for item in samples
             ),
             generation_success_rate=len(generated) / planned if planned else 0,
-            failure_categories=generation_failure_category_counts(
-                item.sample.failure_code
-                for item in samples
-                if item.status is BenchmarkSampleStatus.GENERATION_FAILED
-            ),
+            failure_categories=generation_failure_category_counts(generation_failure_codes),
+            failure_details=generation_failure_detail_counts(generation_failure_codes),
         ),
     )
     score_distribution = metric_summary(scores)

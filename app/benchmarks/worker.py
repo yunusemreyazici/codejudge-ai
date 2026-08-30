@@ -24,6 +24,7 @@ from app.benchmarks.models import (
 from app.benchmarks.pricing import calculate_generation_cost
 from app.benchmarks.prompts import coding_payload, coding_system_prompt
 from app.benchmarks.queue import BenchmarkQueueMessage, BenchmarkQueueProtocol
+from app.benchmarks.reliability import encode_failure_diagnostic
 from app.benchmarks.repositories import BenchmarkRepository
 from app.benchmarks.service import benchmark_evaluator_fingerprint
 from app.db.repositories import PersistenceError
@@ -148,7 +149,9 @@ class BenchmarkWorker:
                 await self._repository.record_failure(
                     claimed.benchmark_sample_id,
                     self.worker_id,
-                    _generation_failure_code(error.code),
+                    encode_failure_diagnostic(
+                        _generation_failure_code(error.code), error.detail_code
+                    ),
                     generation=True,
                     retryable=error.transient,
                     now=self._clock(),

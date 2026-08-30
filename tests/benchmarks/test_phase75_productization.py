@@ -100,8 +100,10 @@ async def test_run_listing_and_show_reuse_persisted_metrics() -> None:
     assert "Generation p50/p95" in shown
     assert "Test mean/p95" in shown
     assert "Generation reliability" in shown
+    assert "Generation failure diagnostics" in shown
     assert "Failure breakdown" in shown
     assert "provider_error=1" in shown
+    assert "refusal" in shown
     assert "USD" in shown
     assert parse_dataset_selector("codejudge-core@2") == ("codejudge-core", "2")
     with pytest.raises(BenchmarkProductError, match="form"):
@@ -255,6 +257,7 @@ async def test_historical_export_without_normalized_reliability_remains_readable
     comparison = build_comparison(historical, current)
 
     assert "provider_error=1" in shown
+    assert "unknown_detail" in shown
     assert comparison["compatibility"]["blockers"] == []
     assert comparison["model_deltas"]
 

@@ -24,6 +24,7 @@ from app.benchmarks.models import (
     GeneratedSolutionArtifact,
     PricingSnapshot,
 )
+from app.benchmarks.reliability import encode_failure_diagnostic
 from app.benchmarks.repositories import BenchmarkResultRow
 from app.snapshots.fingerprints import source_identity
 from app.tasks.registry import TaskRegistry
@@ -171,7 +172,7 @@ def _row(
             status=status,
             attempt_count=1,
             max_attempts=3,
-            failure_code="provider_refusal"
+            failure_code=encode_failure_diagnostic("provider_refusal", "refusal")
             if status is BenchmarkSampleStatus.GENERATION_FAILED
             else None,
             evaluation_duration_seconds=0.75 if source is not None else None,
@@ -221,6 +222,7 @@ async def test_export_is_deterministic_auditable_and_report_is_structural(tmp_pa
         "generation_failures": 0,
         "generation_success_rate": 1,
         "failure_categories": {},
+        "failure_details": {},
     }
     assert first.document["models"][1]["generation_reliability"] == {
         "planned_generations": 1,
@@ -228,7 +230,13 @@ async def test_export_is_deterministic_auditable_and_report_is_structural(tmp_pa
         "generation_failures": 1,
         "generation_success_rate": 0,
         "failure_categories": {"provider_error": 1},
+        "failure_details": {"provider_error": {"refusal": 1}},
     }
+    refused_sample = next(
+        sample for sample in first.document["samples"] if sample["status"] == "generation_failed"
+    )
+    assert refused_sample["failure_code"] == "provider_refusal"
+    assert refused_sample["failure_detail_code"] == "refusal"
     assert first.document["models"][1]["generation_parameters"]["output_mode"] == "raw_source"
     assert first.document["evaluator"]["ai_cost"]["status"] == "not_applicable"
     assert first.document["samples"][0]["evaluation"]["score_breakdown"]["correctness"] == 75
@@ -281,7 +289,9 @@ async def test_export_is_deterministic_auditable_and_report_is_structural(tmp_pa
     assert "Cost Distribution" in report
     assert "Latency Distribution" in report
     assert "Generation Reliability" in report
+    assert "Generation Failure Diagnostics" in report
     assert "provider_error=1" in report
+    assert "refusal" in report
     assert "not enough samples" in report
 
     output = tmp_path / "run" / "results.json"
