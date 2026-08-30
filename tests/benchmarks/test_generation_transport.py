@@ -81,6 +81,7 @@ def _worker(provider: FakeProvider) -> BenchmarkWorker:
     "source",
     [
         "def clean():\n    return 1\n",
+        "\n\ndef indented():\n\tif True:\n\t\treturn 4\n\n",
         "```python\ndef fenced():\n    return 2\n```",
         "Here is the implementation:\ndef prose():\n    return 3\n",
     ],
@@ -99,15 +100,17 @@ async def test_raw_source_preserves_every_byte_as_generation_success(source: str
     assert _candidate_evaluation_request(sample, artifact.source).code == source
 
 
-async def test_raw_source_empty_content_fails_before_evaluation() -> None:
+@pytest.mark.parametrize("source", ["", " ", "\n", "\t", " \n\t\r\n"])
+async def test_raw_source_blank_content_fails_before_evaluation(source: str) -> None:
     provider = FakeProvider()
-    provider.add("coding_generation", "model-a", [""])
+    provider.add("coding_generation", "model-a", [source])
     sample, config = _sample_and_config(GenerationOutputMode.RAW_SOURCE)
 
-    with pytest.raises(ProviderError, match="empty_output"):
+    with pytest.raises(ProviderError, match="empty_output") as error:
         await _worker(provider)._generate(
             sample, config, TaskRegistry.default().get("lru-cache").specification
         )
+    assert error.value.detail_code == "empty_output"
 
 
 async def test_structured_mode_still_rejects_invalid_json() -> None:

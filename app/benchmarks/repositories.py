@@ -417,7 +417,12 @@ class SqlAlchemyBenchmarkRepository:
                     record = await session.get(
                         BenchmarkSampleRecord, sample_id, with_for_update=True
                     )
-                    if record is None or record.worker_id != worker_id:
+                    if (
+                        record is None
+                        or record.worker_id != worker_id
+                        or record.lease_expires_at is None
+                        or record.lease_expires_at <= now
+                    ):
                         return False
                     if BenchmarkSampleStatus(record.status) not in {
                         BenchmarkSampleStatus.GENERATING,
@@ -561,6 +566,8 @@ class SqlAlchemyBenchmarkRepository:
                         )
                     )
                     for record in records:
+                        previous_worker_id = record.worker_id
+                        expired_at = record.lease_expires_at
                         artifact = await session.get(
                             BenchmarkGenerationArtifactRecord, record.benchmark_sample_id
                         )
@@ -590,6 +597,19 @@ class SqlAlchemyBenchmarkRepository:
                             await self._finish_run_if_terminal(
                                 session, record.benchmark_run_id, now
                             )
+                        logger.warning(
+                            "benchmark lease expired run_id=%s sample_id=%s worker_id=%s "
+                            "attempt=%d max_attempts=%d lease_expired_at=%s recovered_at=%s "
+                            "terminal=%s ownership_lost=true",
+                            record.benchmark_run_id,
+                            record.benchmark_sample_id,
+                            previous_worker_id,
+                            record.attempt_count,
+                            record.max_attempts,
+                            expired_at,
+                            now,
+                            BenchmarkSampleStatus(record.status) is BenchmarkSampleStatus.SKIPPED,
+                        )
                         recovered += 1
         except SQLAlchemyError as error:
             raise PersistenceError("Benchmark recovery persistence is unavailable.") from error

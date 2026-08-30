@@ -11,6 +11,7 @@ from app.benchmarks.models import (
     BenchmarkModelRequest,
     BenchmarkSampleStatus,
     GeneratedSolutionArtifact,
+    GenerationOutputMode,
     PricingSnapshot,
 )
 from app.benchmarks.pricing import PricingCatalog
@@ -82,6 +83,7 @@ async def test_fake_models_generate_evaluate_fail_and_rank_without_zero_imputati
                 "invalid-reasoning",
                 "invalid-unsupported",
                 "invalid-no-detail",
+                "blank-raw-source",
             )
         }
     )
@@ -107,6 +109,11 @@ async def test_fake_models_generate_evaluate_fail_and_rank_without_zero_imputati
                 BenchmarkModelRequest(provider_id="fake", model="invalid-reasoning"),
                 BenchmarkModelRequest(provider_id="fake", model="invalid-unsupported"),
                 BenchmarkModelRequest(provider_id="fake", model="invalid-no-detail"),
+                BenchmarkModelRequest(
+                    provider_id="fake",
+                    model="blank-raw-source",
+                    output_mode=GenerationOutputMode.RAW_SOURCE,
+                ),
             ],
             samples_per_task=1,
         ),
@@ -151,6 +158,7 @@ async def test_fake_models_generate_evaluate_fail_and_rank_without_zero_imputati
         "invalid-no-detail",
         [ProviderError("malformed_provider_response")],
     )
+    provider.add("coding_generation", "blank-raw-source", [" \n\t\r\n"])
     queue = FakeBenchmarkQueue()
     worker = BenchmarkWorker(
         worker_id="benchmark-test",
@@ -177,7 +185,7 @@ async def test_fake_models_generate_evaluate_fail_and_rank_without_zero_imputati
     leaderboard = await service.leaderboard(accepted.benchmark_run_id)
     samples = await service.samples(
         accepted.benchmark_run_id,
-        limit=10,
+        limit=20,
         offset=0,
         model=None,
         task_id=None,
@@ -186,7 +194,7 @@ async def test_fake_models_generate_evaluate_fail_and_rank_without_zero_imputati
 
     assert summary.status.value == "completed"
     assert summary.completed_samples == 2
-    assert summary.generation_failures == 8
+    assert summary.generation_failures == 9
     assert [entry.model for entry in leaderboard[:2]] == ["good", "bad"]
     assert {entry.model for entry in leaderboard[2:]} == {
         "refusal",
@@ -197,6 +205,7 @@ async def test_fake_models_generate_evaluate_fail_and_rank_without_zero_imputati
         "invalid-reasoning",
         "invalid-unsupported",
         "invalid-no-detail",
+        "blank-raw-source",
     }
     assert leaderboard[0].weighted_mean_score == 100
     assert leaderboard[0].correctness_pass_rate == 1
@@ -235,7 +244,26 @@ async def test_fake_models_generate_evaluate_fail_and_rank_without_zero_imputati
         assert persisted is not None
         expected_suffix = "" if expected_detail is None else f"::{expected_detail}"
         assert persisted.failure_code == f"malformed_provider_response{expected_suffix}"
-    assert len(provider.requests) == 10
+    blank = next(sample for sample in samples if sample.model == "blank-raw-source")
+    assert blank.status is BenchmarkSampleStatus.GENERATION_FAILED
+    assert blank.failure_code == "empty_output"
+    assert blank.failure_detail_code == "empty_output"
+    assert blank.evaluation_id is None
+    assert (
+        await database_harness.benchmark_repository.get_artifact(blank.benchmark_sample_id) is None
+    )
+    assert (
+        await database_harness.repository.get(
+            next(row.sample.evaluation_id for row in rows if row.config.model == "blank-raw-source")
+        )
+        is None
+    )
+    blank_entry = next(entry for entry in leaderboard if entry.model == "blank-raw-source")
+    assert blank_entry.reliability.generation.failure_categories == {"malformed_output": 1}
+    assert blank_entry.reliability.generation.failure_details == {
+        "malformed_output": {"empty_output": 1}
+    }
+    assert len(provider.requests) == 11
 
     snapshot_recovery = await service.create(
         BenchmarkCreateRequest(
@@ -416,4 +444,4 @@ async def test_fake_models_generate_evaluate_fail_and_rank_without_zero_imputati
                 benchmark_sample_id=row.benchmark_sample_id,
             )
         )
-    assert len(provider.requests) == 10
+    assert len(provider.requests) == 11

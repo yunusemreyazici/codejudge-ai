@@ -304,3 +304,87 @@ async def test_existing_evaluation_snapshot_is_linked_without_reevaluation(
     assert await repository.complete(sample.benchmark_sample_id, "worker", snapshot, NOW, 1)
     completed = await repository.get_sample(sample.benchmark_sample_id)
     assert completed is not None and completed.status is BenchmarkSampleStatus.COMPLETED
+
+
+async def test_lease_renewal_must_happen_before_expiry_and_extends_ownership(
+    database_harness: DatabaseHarness,
+) -> None:
+    repository = database_harness.benchmark_repository
+    run, config, sample = _plan(idempotency_key=None)
+    await repository.create_plan(run, [config], [sample])
+    assert await repository.claim(sample.benchmark_sample_id, "worker", NOW, 10)
+
+    assert await repository.renew_lease(
+        sample.benchmark_sample_id, "worker", NOW + timedelta(seconds=9), 10
+    )
+    assert await repository.recover_stale(NOW + timedelta(seconds=18), 0.01) == 0
+    assert not await repository.renew_lease(
+        sample.benchmark_sample_id, "worker", NOW + timedelta(seconds=20), 10
+    )
+    assert await repository.recover_stale(NOW + timedelta(seconds=20), 0.01) == 1
+
+
+async def test_reclaimed_sample_rejects_old_owner_renewal_and_completion(
+    database_harness: DatabaseHarness,
+) -> None:
+    repository = database_harness.benchmark_repository
+    run, config, sample = _plan(idempotency_key=None)
+    await repository.create_plan(run, [config], [sample])
+    assert await repository.claim(sample.benchmark_sample_id, "old-worker", NOW, 1)
+    source_hash, source_size = source_identity(SOURCE)
+    artifact = GeneratedSolutionArtifact(
+        benchmark_sample_id=sample.benchmark_sample_id,
+        source=SOURCE,
+        source_hash=source_hash,
+        source_size=source_size,
+        generation_latency_ms=7,
+        created_at=NOW,
+    )
+    assert await repository.store_artifact(sample.benchmark_sample_id, "old-worker", artifact, NOW)
+    assert await repository.recover_stale(NOW + timedelta(seconds=2), 0.01) == 1
+    assert await repository.claim(
+        sample.benchmark_sample_id, "replacement", NOW + timedelta(seconds=3), 10
+    )
+
+    snapshot = snapshot_fixture(source=SOURCE, evaluation_id=sample.evaluation_id)
+    assert not await repository.renew_lease(
+        sample.benchmark_sample_id, "old-worker", NOW + timedelta(seconds=4), 10
+    )
+    assert not await repository.complete(
+        sample.benchmark_sample_id,
+        "old-worker",
+        snapshot,
+        NOW + timedelta(seconds=4),
+        4,
+    )
+    assert await database_harness.repository.get(sample.evaluation_id) is None
+
+    assert await repository.complete(
+        sample.benchmark_sample_id,
+        "replacement",
+        snapshot,
+        NOW + timedelta(seconds=5),
+        5,
+    )
+    assert await database_harness.repository.get(sample.evaluation_id) == snapshot
+
+
+async def test_truly_abandoned_work_exhausts_exactly_the_bounded_attempt_count(
+    database_harness: DatabaseHarness,
+) -> None:
+    repository = database_harness.benchmark_repository
+    run, config, sample = _plan(idempotency_key=None)
+    await repository.create_plan(run, [config], [sample])
+
+    for attempt in range(1, sample.max_attempts + 1):
+        claimed_at = NOW + timedelta(seconds=attempt * 10)
+        assert await repository.claim(sample.benchmark_sample_id, f"dead-{attempt}", claimed_at, 1)
+        assert await repository.recover_stale(claimed_at + timedelta(seconds=2), 0.01) == 1
+
+    exhausted = await repository.get_sample(sample.benchmark_sample_id)
+    finalized = await repository.get_run(run.benchmark_run_id)
+    assert exhausted is not None
+    assert exhausted.status is BenchmarkSampleStatus.SKIPPED
+    assert exhausted.failure_code == "worker_lease_expired"
+    assert exhausted.attempt_count == exhausted.max_attempts == 3
+    assert finalized is not None and finalized.status is BenchmarkRunStatus.PARTIAL

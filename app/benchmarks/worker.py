@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from collections.abc import Callable, Mapping
 from datetime import datetime
-from uuid import UUID
 
 from pydantic import ValidationError
 
@@ -34,6 +34,8 @@ from app.evaluator.service import EvaluationService
 from app.jobs.service import utc_now
 from app.snapshots.fingerprints import source_identity, task_fingerprint, tests_fingerprint
 from app.tasks.registry import TaskRegistry
+
+logger = logging.getLogger(__name__)
 
 
 class BenchmarkWorker:
@@ -87,12 +89,46 @@ class BenchmarkWorker:
             await self._queue.acknowledge(message.message_id)
             return
 
-        started = time.monotonic()
-        stop_heartbeat = asyncio.Event()
-        heartbeat = asyncio.create_task(
-            self._renew_lease(claimed.benchmark_sample_id, stop_heartbeat)
+        logger.info(
+            "benchmark lease acquired run_id=%s sample_id=%s worker_id=%s attempt=%d "
+            "lease_acquired_at=%s lease_expires_at=%s",
+            claimed.benchmark_run_id,
+            claimed.benchmark_sample_id,
+            self.worker_id,
+            claimed.attempt_count,
+            claimed.updated_at,
+            claimed.lease_expires_at,
         )
-        transition_recorded = False
+        transition_recorded = await self._run_with_lease(claimed)
+        if transition_recorded:
+            await self._queue.acknowledge(message.message_id)
+
+    async def _run_with_lease(self, claimed: BenchmarkSample) -> bool:
+        stop_heartbeat = asyncio.Event()
+        heartbeat = asyncio.create_task(self._renew_lease(claimed, stop_heartbeat))
+        processing = asyncio.create_task(self._process_claimed(claimed))
+        try:
+            done, _ = await asyncio.wait(
+                {processing, heartbeat}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if processing in done:
+                transition_recorded = processing.result()
+            else:
+                heartbeat.result()
+                processing.cancel()
+                await asyncio.gather(processing, return_exceptions=True)
+                transition_recorded = False
+        finally:
+            stop_heartbeat.set()
+            if not processing.done():
+                processing.cancel()
+            if not heartbeat.done():
+                heartbeat.cancel()
+            await asyncio.gather(processing, heartbeat, return_exceptions=True)
+        return transition_recorded
+
+    async def _process_claimed(self, claimed: BenchmarkSample) -> bool:
+        started = time.monotonic()
         try:
             run = await self._repository.get_run(claimed.benchmark_run_id)
             config = await self._repository.get_config(claimed.model_config_id)
@@ -123,7 +159,7 @@ class BenchmarkWorker:
                     self._clock(),
                 )
                 if not stored:
-                    return
+                    return False
             snapshot = await self._evaluations.get_snapshot(claimed.evaluation_id)
             if snapshot is None:
                 snapshot = await self._evaluations.evaluate_snapshot(
@@ -137,7 +173,7 @@ class BenchmarkWorker:
                 or snapshot.tests_fingerprint != claimed.tests_fingerprint
             ):
                 raise EvaluationInfrastructureError("benchmark_evaluation_identity_mismatch")
-            transition_recorded = await self._repository.complete(
+            return await self._repository.complete(
                 claimed.benchmark_sample_id,
                 self.worker_id,
                 snapshot,
@@ -145,7 +181,7 @@ class BenchmarkWorker:
                 max(0, time.monotonic() - started),
             )
         except ProviderError as error:
-            transition_recorded = (
+            return (
                 await self._repository.record_failure(
                     claimed.benchmark_sample_id,
                     self.worker_id,
@@ -160,7 +196,7 @@ class BenchmarkWorker:
                 is not None
             )
         except EvaluationInfrastructureError as error:
-            transition_recorded = (
+            return (
                 await self._repository.record_failure(
                     claimed.benchmark_sample_id,
                     self.worker_id,
@@ -173,9 +209,9 @@ class BenchmarkWorker:
                 is not None
             )
         except PersistenceError:
-            transition_recorded = False
+            return False
         except Exception as error:
-            transition_recorded = (
+            return (
                 await self._repository.record_failure(
                     claimed.benchmark_sample_id,
                     self.worker_id,
@@ -187,11 +223,6 @@ class BenchmarkWorker:
                 )
                 is not None
             )
-        finally:
-            stop_heartbeat.set()
-            await heartbeat
-        if transition_recorded:
-            await self._queue.acknowledge(message.message_id)
 
     async def _generate(
         self, sample: BenchmarkSample, config: BenchmarkModelConfig, task: Task
@@ -212,8 +243,8 @@ class BenchmarkWorker:
         )
         if config.output_mode is GenerationOutputMode.RAW_SOURCE:
             response = await provider.complete_raw_source(request)
-            if response.content == "":
-                raise ProviderError("empty_output")
+            if not response.content.strip():
+                raise ProviderError("empty_output", detail_code="empty_output")
             source = response.content
         else:
             response = await provider.complete_structured(request)
@@ -246,23 +277,60 @@ class BenchmarkWorker:
             created_at=self._clock(),
         )
 
-    async def _renew_lease(self, sample_id: UUID, stop: asyncio.Event) -> None:
-        interval = max(0.1, self._lease_seconds / 3)
+    async def _renew_lease(self, sample: BenchmarkSample, stop: asyncio.Event) -> None:
+        interval = self._lease_seconds / 3
+        renewal_count = 0
+        renewal_deadline = time.monotonic() + self._lease_seconds
         while not stop.is_set():
             try:
                 await asyncio.wait_for(stop.wait(), timeout=interval)
             except TimeoutError:
+                remaining = renewal_deadline - time.monotonic()
+                if remaining <= 0:
+                    self._log_lease_loss(sample, renewal_count, "renewal_deadline_exceeded")
+                    return
                 try:
-                    renewed = await self._repository.renew_lease(
-                        sample_id,
+                    async with asyncio.timeout(remaining):
+                        renewed = await self._repository.renew_lease(
+                            sample.benchmark_sample_id,
+                            self.worker_id,
+                            self._clock(),
+                            self._lease_seconds,
+                        )
+                except (PersistenceError, TimeoutError) as error:
+                    logger.warning(
+                        "benchmark lease renewal deferred run_id=%s sample_id=%s "
+                        "worker_id=%s attempt=%d renewal_count=%d error_type=%s",
+                        sample.benchmark_run_id,
+                        sample.benchmark_sample_id,
                         self.worker_id,
-                        self._clock(),
-                        self._lease_seconds,
+                        sample.attempt_count,
+                        renewal_count,
+                        type(error).__name__,
                     )
-                except PersistenceError:
+                    if time.monotonic() >= renewal_deadline:
+                        self._log_lease_loss(
+                            sample, renewal_count, "renewal_unconfirmed_before_expiry"
+                        )
+                        return
                     continue
                 if not renewed:
+                    self._log_lease_loss(sample, renewal_count, "repository_rejected_renewal")
                     return
+                renewal_count += 1
+                renewal_deadline = time.monotonic() + self._lease_seconds
+
+    def _log_lease_loss(self, sample: BenchmarkSample, renewal_count: int, reason: str) -> None:
+        logger.warning(
+            "benchmark lease ownership lost run_id=%s sample_id=%s worker_id=%s "
+            "attempt=%d renewal_count=%d reason=%s ownership_lost=true",
+            sample.benchmark_run_id,
+            sample.benchmark_sample_id,
+            self.worker_id,
+            sample.attempt_count,
+            renewal_count,
+            reason,
+        )
 
 
 def _generation_failure_code(code: str) -> str:

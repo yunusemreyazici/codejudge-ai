@@ -56,6 +56,7 @@ def test_sanitized_failure_details_round_trip_without_changing_public_taxonomy()
         encode_failure_diagnostic("malformed_provider_response", "unsupported_content_type"),
         "malformed_provider_response",
         encode_failure_diagnostic("provider_refusal", "refusal"),
+        encode_failure_diagnostic("empty_output", "empty_output"),
     ]
 
     assert [normalize_generation_failure(value) for value in persisted] == [
@@ -65,6 +66,7 @@ def test_sanitized_failure_details_round_trip_without_changing_public_taxonomy()
         "invalid_response",
         "invalid_response",
         "provider_error",
+        "malformed_output",
     ]
     assert generation_failure_detail_counts(persisted) == {
         "provider_error": {"refusal": 1},
@@ -75,6 +77,7 @@ def test_sanitized_failure_details_round_trip_without_changing_public_taxonomy()
             "unsupported_content_type": 1,
             UNKNOWN_FAILURE_DETAIL: 1,
         },
+        "malformed_output": {"empty_output": 1},
     }
 
 

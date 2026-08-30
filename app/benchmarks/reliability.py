@@ -39,6 +39,7 @@ _SAFE_PROVIDER_FAILURE_DETAILS = frozenset(
     {
         "empty_choices",
         "empty_content",
+        "empty_output",
         "invalid_choice",
         "invalid_choices_type",
         "invalid_message_type",
