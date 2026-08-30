@@ -12,11 +12,14 @@ the threat model in [Security model](security-model.md).
 | `SANDBOX_MEMORY_MB` | `256` | Docker memory limit |
 | `SANDBOX_CPUS` | `0.5` | Fractional CPU allocation |
 | `SANDBOX_PIDS_LIMIT` | `64` | Container process ceiling |
-| `SANDBOX_TIMEOUT_SECONDS` | `5.0` | Global container wall-time ceiling |
+| `SANDBOX_TIMEOUT_SECONDS` | `8.0` | Global container wall-time ceiling |
 | `SANDBOX_OUTPUT_LIMIT_BYTES` | `1048576` | Combined retained output ceiling |
 | `SANDBOX_IMAGE` | `codejudge-python-sandbox:phase2` | Prebuilt execution image |
 
 The effective execution timeout is the smaller of the task timeout and global sandbox timeout.
+Historical tasks retain their 5-second declarations. The structured event parser and frame decoder
+declare 8 seconds because their 17 isolated official cases require additional process-startup
+headroom on slower Docker hosts.
 The root filesystem and candidate workspace are read-only; only bounded temporary storage is
 writable.
 

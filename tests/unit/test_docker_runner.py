@@ -206,6 +206,27 @@ async def test_runner_builds_restricted_container_and_cleans_up(correct_lru: str
     assert client.commands[-1][0:2] == ["rm", "--force"]
 
 
+async def test_task_timeout_is_used_when_below_or_equal_to_global_ceiling() -> None:
+    frame = TaskRegistry.default().get("frame-decoder")
+    frame_result = await _runner(FakeDockerClient(), timeout_seconds=8).evaluate(frame, "source")
+
+    historical = TaskRegistry.default().get("lru-cache")
+    historical_result = await _runner(FakeDockerClient(), timeout_seconds=8).evaluate(
+        historical, "source"
+    )
+
+    assert frame_result.enforced_timeout_seconds == 8.0
+    assert historical_result.enforced_timeout_seconds == 5.0
+
+
+async def test_global_timeout_remains_a_hard_cap_for_extended_task() -> None:
+    task = TaskRegistry.default().get("structured-event-parser")
+
+    result = await _runner(FakeDockerClient(), timeout_seconds=6).evaluate(task, "source")
+
+    assert result.enforced_timeout_seconds == 6.0
+
+
 async def test_generated_test_runner_applies_hard_memory_and_swap_ceiling(
     correct_lru: str,
 ) -> None:

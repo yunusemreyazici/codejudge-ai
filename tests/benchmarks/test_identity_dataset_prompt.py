@@ -86,7 +86,7 @@ def test_dataset_v3_expands_diversity_without_mutating_v2() -> None:
         "ee0f631d6810c039e84d90d9f2b77f20dcabbe27bef0af600695ab9cb1111988"
     )
     assert third.dataset_fingerprint == (
-        "fcbc143e6b704588c6c3b4089104896dff06f1dcb3c5f21aab7c766a1bb4d80e"
+        "1191d27db4643e9c18a0063ea9da1d2fb56fc363f0d2146740b53eee05e94522"
     )
     assert third.dataset_fingerprint == dataset_fingerprint(
         third.dataset_id, third.dataset_version, third.task_entries

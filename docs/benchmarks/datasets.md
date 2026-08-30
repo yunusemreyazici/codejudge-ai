@@ -22,7 +22,7 @@ ee0f631d6810c039e84d90d9f2b77f20dcabbe27bef0af600695ab9cb1111988
 and adds five tasks for capabilities that v2 did not cover. Its fingerprint is:
 
 ```text
-fcbc143e6b704588c6c3b4089104896dff06f1dcb3c5f21aab7c766a1bb4d80e
+1191d27db4643e9c18a0063ea9da1d2fb56fc363f0d2146740b53eee05e94522
 ```
 
 All v2 and v3 tasks have equal weight `1.0`. Published v2 results are not v3 results and must not be

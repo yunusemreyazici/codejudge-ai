@@ -12,6 +12,10 @@ from tests.tasks.candidates import INCORRECT_CANDIDATES
 
 INCORRECT_TASK_IDS = tuple(INCORRECT_CANDIDATES)
 ALL_TASK_IDS = tuple(task.id for task in TaskRegistry.default().list())
+EXTENDED_TIMEOUT_TASK_IDS = ("frame-decoder", "structured-event-parser")
+STANDARD_TIMEOUT_TASK_IDS = tuple(
+    task_id for task_id in ALL_TASK_IDS if task_id not in EXTENDED_TIMEOUT_TASK_IDS
+)
 
 EXPECTED_IDENTITIES = {
     "async-batch-processor": (
@@ -36,7 +40,7 @@ EXPECTED_IDENTITIES = {
     ),
     "frame-decoder": (
         "04a2163e2182da736e1a1e7c3e96840f9e2cf38239704ff77850f1092dd920e0",
-        "ebab75405abb861ff2970ce786c7af2d82aad56dc67d6d0169ef529e1652e613",
+        "ab2b4d4ff59aa8b5571656df96a4bcd2940e97e1bbad3de849dfeffc71642a02",
         "d8dc92dac390be11de1472c85c7082b532ccc44e625cf0da7e5f7635bba38ab9",
     ),
     "interval-reservation": (
@@ -61,7 +65,7 @@ EXPECTED_IDENTITIES = {
     ),
     "structured-event-parser": (
         "be0c453b8a2e43b47155c273c790fc008f6adbb2d40c268aececbc49b992fd4f",
-        "6c6e85c8b155c7ea010c9cd649a6f319f6af79b014973a5f652fdd7d5fe83031",
+        "ecfd9670231f9008572c1534cf5eb4547387851e4f96122a42b3d40a2ac46dc1",
         "941d2305d8aee98f5819ca9ae7865805fd6ed562a82bc12c890667ab68cc4aeb",
     ),
     "ttl-cache": (
@@ -86,6 +90,19 @@ EXPECTED_ENTRYPOINTS = {
 }
 
 
+@pytest.mark.parametrize("task_id", EXTENDED_TIMEOUT_TASK_IDS)
+def test_seventeen_case_tasks_have_bounded_ci_timeout_headroom(task_id: str) -> None:
+    task = TaskRegistry.default().get(task_id)
+
+    assert len(OFFICIAL_CASES[task_id]) == 17
+    assert task.specification.timeout_seconds == 8.0
+
+
+@pytest.mark.parametrize("task_id", STANDARD_TIMEOUT_TASK_IDS)
+def test_other_task_timeout_declarations_remain_five_seconds(task_id: str) -> None:
+    assert TaskRegistry.default().get(task_id).specification.timeout_seconds == 5.0
+
+
 @pytest.mark.parametrize("task_id", INCORRECT_TASK_IDS)
 def test_task_metadata_and_fingerprints_are_stable(task_id: str) -> None:
     task = TaskRegistry.default().get(task_id)
@@ -108,6 +125,7 @@ async def test_trusted_reference_passes_every_official_test(task_id: str) -> Non
     result = await PythonRunner().evaluate(task, task.reference_path.read_text(encoding="utf-8"))
 
     assert result.infrastructure_error is None
+    assert result.timed_out is False
     assert result.total == len(OFFICIAL_CASES[task_id])
     assert result.failed == 0
     assert result.passed == result.total
@@ -120,6 +138,7 @@ async def test_obviously_incorrect_candidate_is_rejected(task_id: str) -> None:
     result = await PythonRunner().evaluate(task, INCORRECT_CANDIDATES[task_id])
 
     assert result.infrastructure_error is None
+    assert result.timed_out is False
     assert result.total > 0
     assert result.failed > 0
     assert result.passed < result.total

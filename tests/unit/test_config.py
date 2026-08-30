@@ -10,6 +10,7 @@ def test_settings_default_to_docker_backend() -> None:
     assert Settings().evaluation_mode is EvaluationMode.SYNC
     assert Settings().llm_enabled is False
     assert Settings().benchmark_enabled is False
+    assert Settings().sandbox_timeout_seconds == 8.0
     assert Settings().max_benchmark_models == 20
     assert Settings().max_benchmark_total_generations == 500
 

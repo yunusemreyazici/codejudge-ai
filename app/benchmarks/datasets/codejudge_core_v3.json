@@ -56,7 +56,7 @@
     {
       "task_id": "structured-event-parser",
       "task_version": "1.0",
-      "task_fingerprint": "6c6e85c8b155c7ea010c9cd649a6f319f6af79b014973a5f652fdd7d5fe83031",
+      "task_fingerprint": "ecfd9670231f9008572c1534cf5eb4547387851e4f96122a42b3d40a2ac46dc1",
       "tests_fingerprint": "be0c453b8a2e43b47155c273c790fc008f6adbb2d40c268aececbc49b992fd4f",
       "weight": 1.0
     },
@@ -84,7 +84,7 @@
     {
       "task_id": "frame-decoder",
       "task_version": "1.0",
-      "task_fingerprint": "ebab75405abb861ff2970ce786c7af2d82aad56dc67d6d0169ef529e1652e613",
+      "task_fingerprint": "ab2b4d4ff59aa8b5571656df96a4bcd2940e97e1bbad3de849dfeffc71642a02",
       "tests_fingerprint": "04a2163e2182da736e1a1e7c3e96840f9e2cf38239704ff77850f1092dd920e0",
       "weight": 1.0
     }

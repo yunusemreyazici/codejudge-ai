@@ -40,6 +40,8 @@ async def test_trusted_reference_passes_in_real_docker(
 
     assert result.infrastructure_error is None
     assert result.sandbox_error is None
+    assert result.timed_out is False
+    assert result.oom_killed is False
     assert result.failed == 0
     assert result.passed == result.total == len(OFFICIAL_CASES[task_id])
 
@@ -54,5 +56,7 @@ async def test_incorrect_candidate_fails_in_real_docker(
 
     assert result.infrastructure_error is None
     assert result.sandbox_error is None
+    assert result.timed_out is False
+    assert result.oom_killed is False
     assert result.total > 0
     assert result.failed > 0
