@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from app.benchmarks.identity import dataset_fingerprint
 from app.benchmarks.models import BenchmarkDataset, DatasetTaskEntry
 from app.snapshots.fingerprints import task_fingerprint, tests_fingerprint
-from app.tasks.registry import TaskNotFoundError, TaskRegistry
+from app.tasks.registry import RegisteredTask, TaskNotFoundError, TaskRegistry
 
 
 class DatasetRegistryError(RuntimeError):
@@ -51,10 +51,15 @@ class BenchmarkDatasetRegistry:
                 )
             except (OSError, ValidationError) as error:
                 raise DatasetRegistryError(f"Invalid benchmark dataset: {path.name}") from error
-            entries = tuple(sorted(definition.task_entries, key=lambda item: item.task_id))
+            entries = tuple(
+                sorted(
+                    definition.task_entries,
+                    key=lambda item: (item.task_id, item.resolved_task_revision),
+                )
+            )
             if not entries:
                 raise DatasetRegistryError(f"Benchmark dataset has no tasks: {path.name}")
-            task_keys = [(entry.task_id, entry.task_version) for entry in entries]
+            task_keys = [entry.task_id for entry in entries]
             if len(set(task_keys)) != len(task_keys):
                 raise DatasetRegistryError(f"Duplicate task in benchmark dataset: {path.name}")
             for entry in entries:
@@ -77,12 +82,29 @@ class BenchmarkDatasetRegistry:
                 f"Unknown benchmark dataset: {dataset_id}@{dataset_version}"
             ) from error
 
+    def resolve_task(self, entry: DatasetTaskEntry) -> RegisteredTask:
+        """Resolve the exact immutable task revision bound by a dataset entry."""
+
+        return self._tasks.get_revision(entry.task_id, entry.resolved_task_revision)
+
+    def resolve_dataset_task(
+        self, dataset: BenchmarkDataset, task_id: str
+    ) -> tuple[DatasetTaskEntry, RegisteredTask]:
+        try:
+            entry = next(item for item in dataset.task_entries if item.task_id == task_id)
+        except StopIteration as error:
+            raise DatasetRegistryError(
+                f"Dataset {dataset.dataset_id}@{dataset.dataset_version} has no task: {task_id}"
+            ) from error
+        return entry, self.resolve_task(entry)
+
     def _validate_entry(self, entry: DatasetTaskEntry) -> None:
         try:
-            task = self._tasks.get(entry.task_id)
+            task = self.resolve_task(entry)
         except TaskNotFoundError as error:
             raise DatasetRegistryError(
-                f"Dataset references unknown task: {entry.task_id}"
+                "Dataset references unknown task revision: "
+                f"{entry.task_id}@{entry.resolved_task_revision}"
             ) from error
         current_tests = tests_fingerprint(task)
         current_task = task_fingerprint(task, current_tests)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from app.ai.service import reference_fingerprint
+from app.benchmarks.datasets import BenchmarkDatasetRegistry
 from app.runners.python_runner import PythonRunner
 from app.runners.trusted_harness import OFFICIAL_CASES
 from app.snapshots.fingerprints import task_fingerprint
@@ -11,7 +12,10 @@ from app.tasks.registry import TaskRegistry
 from tests.tasks.candidates import INCORRECT_CANDIDATES
 
 INCORRECT_TASK_IDS = tuple(INCORRECT_CANDIDATES)
-ALL_TASK_IDS = tuple(task.id for task in TaskRegistry.default().list())
+TASKS = TaskRegistry.default()
+DATASETS = BenchmarkDatasetRegistry.default(TASKS)
+CORE_V3 = DATASETS.get("codejudge-core", "3")
+ALL_TASK_IDS = tuple(entry.task_id for entry in CORE_V3.task_entries)
 EXTENDED_TIMEOUT_TASK_IDS = ("frame-decoder", "structured-event-parser")
 STANDARD_TIMEOUT_TASK_IDS = tuple(
     task_id for task_id in ALL_TASK_IDS if task_id not in EXTENDED_TIMEOUT_TASK_IDS
@@ -96,9 +100,13 @@ EXPECTED_ENTRYPOINTS = {
 }
 
 
+def _core_v3_task(task_id: str):
+    return DATASETS.resolve_dataset_task(CORE_V3, task_id)[1]
+
+
 @pytest.mark.parametrize("task_id", EXTENDED_TIMEOUT_TASK_IDS)
 def test_seventeen_case_tasks_have_bounded_ci_timeout_headroom(task_id: str) -> None:
-    task = TaskRegistry.default().get(task_id)
+    task = _core_v3_task(task_id)
 
     assert len(OFFICIAL_CASES[task_id]) == 17
     assert task.specification.timeout_seconds == 8.0
@@ -106,12 +114,12 @@ def test_seventeen_case_tasks_have_bounded_ci_timeout_headroom(task_id: str) -> 
 
 @pytest.mark.parametrize("task_id", STANDARD_TIMEOUT_TASK_IDS)
 def test_other_task_timeout_declarations_remain_five_seconds(task_id: str) -> None:
-    assert TaskRegistry.default().get(task_id).specification.timeout_seconds == 5.0
+    assert _core_v3_task(task_id).specification.timeout_seconds == 5.0
 
 
 @pytest.mark.parametrize("task_id", INCORRECT_TASK_IDS)
 def test_task_metadata_and_fingerprints_are_stable(task_id: str) -> None:
-    task = TaskRegistry.default().get(task_id)
+    task = _core_v3_task(task_id)
     tests_hash = _tests_fingerprint(task)
     tests_expected, task_expected, reference_expected = EXPECTED_IDENTITIES[task_id]
 
@@ -125,7 +133,7 @@ def test_task_metadata_and_fingerprints_are_stable(task_id: str) -> None:
 
 @pytest.mark.parametrize("task_id", ALL_TASK_IDS)
 async def test_trusted_reference_passes_every_official_test(task_id: str) -> None:
-    task = TaskRegistry.default().get(task_id)
+    task = _core_v3_task(task_id)
     assert task.reference_path is not None
 
     result = await PythonRunner().evaluate(task, task.reference_path.read_text(encoding="utf-8"))
@@ -139,7 +147,7 @@ async def test_trusted_reference_passes_every_official_test(task_id: str) -> Non
 
 @pytest.mark.parametrize("task_id", INCORRECT_TASK_IDS)
 async def test_obviously_incorrect_candidate_is_rejected(task_id: str) -> None:
-    task = TaskRegistry.default().get(task_id)
+    task = _core_v3_task(task_id)
 
     result = await PythonRunner().evaluate(task, INCORRECT_CANDIDATES[task_id])
 

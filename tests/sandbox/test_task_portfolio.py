@@ -5,6 +5,7 @@ import os
 import pytest
 import pytest_asyncio
 
+from app.benchmarks.datasets import BenchmarkDatasetRegistry
 from app.core.config import Settings
 from app.runners.docker_runner import DockerPythonRunner
 from app.runners.factory import create_python_runner
@@ -13,7 +14,14 @@ from app.tasks.registry import TaskRegistry
 from tests.tasks.candidates import INCORRECT_CANDIDATES
 
 pytestmark = pytest.mark.sandbox
-TRUSTED_TASK_IDS = tuple(task.id for task in TaskRegistry.default().list())
+TASKS = TaskRegistry.default()
+DATASETS = BenchmarkDatasetRegistry.default(TASKS)
+CORE_V3 = DATASETS.get("codejudge-core", "3")
+TRUSTED_TASK_IDS = tuple(entry.task_id for entry in CORE_V3.task_entries)
+
+
+def _core_v3_task(task_id: str):
+    return DATASETS.resolve_dataset_task(CORE_V3, task_id)[1]
 
 
 @pytest_asyncio.fixture(scope="module")
@@ -33,7 +41,7 @@ async def portfolio_runner() -> DockerPythonRunner:
 async def test_trusted_reference_passes_in_real_docker(
     portfolio_runner: DockerPythonRunner, task_id: str
 ) -> None:
-    task = TaskRegistry.default().get(task_id)
+    task = _core_v3_task(task_id)
     assert task.reference_path is not None
 
     result = await portfolio_runner.evaluate(task, task.reference_path.read_text(encoding="utf-8"))
@@ -50,7 +58,7 @@ async def test_trusted_reference_passes_in_real_docker(
 async def test_incorrect_candidate_fails_in_real_docker(
     portfolio_runner: DockerPythonRunner, task_id: str
 ) -> None:
-    task = TaskRegistry.default().get(task_id)
+    task = _core_v3_task(task_id)
 
     result = await portfolio_runner.evaluate(task, INCORRECT_CANDIDATES[task_id])
 

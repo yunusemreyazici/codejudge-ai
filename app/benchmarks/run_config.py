@@ -16,6 +16,7 @@ from app.ai.prompts import canonical_json
 from app.benchmarks.datasets import BenchmarkDatasetRegistry
 from app.benchmarks.models import (
     BenchmarkModelRequest,
+    DatasetTaskEntry,
     GenerationOutputMode,
     PricingSnapshot,
 )
@@ -281,7 +282,7 @@ def build_plan(
         pricing = catalog.get(model.provider_id, model.model)
         maximum_input = (
             sum(
-                _input_token_bound(resolved_tasks, entry.task_id, model.output_mode)
+                _input_token_bound(resolved_tasks, entry, model.output_mode)
                 for entry in dataset.task_entries
             )
             * config.samples_per_task
@@ -386,8 +387,12 @@ def resolved_provider_values(
     return resolved
 
 
-def _input_token_bound(tasks: TaskRegistry, task_id: str, output_mode: GenerationOutputMode) -> int:
-    task = tasks.get(task_id).specification
+def _input_token_bound(
+    tasks: TaskRegistry,
+    entry: DatasetTaskEntry,
+    output_mode: GenerationOutputMode,
+) -> int:
+    task = tasks.get_revision(entry.task_id, entry.resolved_task_revision).specification
     public_payload = canonical_json(coding_payload(task, output_mode))
     system_prompt = coding_system_prompt(output_mode)
     return len(system_prompt.encode("utf-8")) + len(public_payload.encode("utf-8")) + 512

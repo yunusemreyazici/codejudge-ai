@@ -81,8 +81,13 @@ class EvaluationService:
             ai_assessment=stored.ai_assessment,
         )
 
-    def prepare_request(self, request: EvaluationRequest) -> RegisteredTask:
-        return self._engine.prepare_request(request)
+    def prepare_request(
+        self,
+        request: EvaluationRequest,
+        *,
+        task_revision: int | None = None,
+    ) -> RegisteredTask:
+        return self._engine.prepare_request(request, task_revision=task_revision)
 
     async def runtime_identity(
         self,
@@ -101,8 +106,9 @@ class EvaluationService:
         evaluation_id: UUID,
         created_at: datetime,
         expected_ai_identity: AIIdentity | None = None,
+        task_revision: int | None = None,
     ) -> EvaluationSnapshot:
-        outcome = await self._engine.evaluate_outcome(request)
+        outcome = await self._engine.evaluate_outcome(request, task_revision=task_revision)
         completed_at = datetime.now(UTC)
         execution = await self._execution_metadata.snapshot()
         versions = canonical_analyzer_versions() if outcome.result.analysis is not None else {}

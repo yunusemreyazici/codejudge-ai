@@ -125,6 +125,7 @@ class GatedEvaluations:
         self.release = release
         self.started = asyncio.Event()
         self.calls = 0
+        self.task_revisions: list[int | None] = []
 
     async def get_snapshot(self, evaluation_id: object) -> None:
         del evaluation_id
@@ -136,9 +137,11 @@ class GatedEvaluations:
         *,
         evaluation_id: object,
         created_at: datetime,
+        task_revision: int | None = None,
     ) -> EvaluationSnapshot:
         del created_at
         self.calls += 1
+        self.task_revisions.append(task_revision)
         self.started.set()
         if self.release is not None:
             await self.release.wait()
@@ -265,6 +268,7 @@ async def test_long_provider_and_evaluation_paths_renew_before_initial_lease_exp
     await asyncio.sleep(0.12)
     assert len(repository.renewal_times) == completed_renewals
     assert provider.calls == evaluations.calls == repository.completions == 1
+    assert evaluations.task_revisions == [1]
     assert repository.artifact is not None
 
 

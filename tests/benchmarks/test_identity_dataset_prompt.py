@@ -196,10 +196,11 @@ def test_every_published_coding_payload_excludes_private_evaluator_material(
     dataset_version: str,
 ) -> None:
     tasks = TaskRegistry.default()
-    dataset = BenchmarkDatasetRegistry.default(tasks).get("codejudge-core", dataset_version)
+    datasets = BenchmarkDatasetRegistry.default(tasks)
+    dataset = datasets.get("codejudge-core", dataset_version)
 
     for entry in dataset.task_entries:
-        payload = coding_payload(tasks.get(entry.task_id).specification)
+        payload = coding_payload(datasets.resolve_task(entry).specification)
         rendered = json.dumps(payload, sort_keys=True).lower()
         assert "reference" not in rendered
         assert "hidden test" not in rendered

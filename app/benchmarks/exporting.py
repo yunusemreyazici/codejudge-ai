@@ -145,7 +145,10 @@ class BenchmarkExporter:
                 "fingerprint": dataset.dataset_fingerprint,
                 "title": dataset.title,
                 "description": dataset.description,
-                "tasks": [entry.model_dump(mode="json") for entry in dataset.task_entries],
+                "tasks": [
+                    entry.model_dump(mode="json", exclude_none=True)
+                    for entry in dataset.task_entries
+                ],
             },
             "benchmark_policy": {"version": run.benchmark_policy_version},
             "coding_prompt": {

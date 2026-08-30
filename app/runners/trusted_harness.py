@@ -1096,18 +1096,27 @@ OFFICIAL_CASES: Mapping[str, tuple[OfficialCase, ...]] = {
     "frame-decoder": _frame_decoder_cases(),
 }
 
+OFFICIAL_CASES_BY_REVISION: Mapping[tuple[str, int], tuple[OfficialCase, ...]] = {
+    (task_id, 1): cases for task_id, cases in OFFICIAL_CASES.items()
+}
+
 OFFICIAL_TEST_CASE_COUNTS: Mapping[str, int] = {
     task_id: len(cases) for task_id, cases in OFFICIAL_CASES.items()
 }
 
 
 class TrustedOfficialHarness:
-    async def evaluate(self, task_id: str, transport: CandidateTransport) -> HarnessReport:
+    async def evaluate(
+        self,
+        task_id: str,
+        task_revision: int,
+        transport: CandidateTransport,
+    ) -> HarnessReport:
         try:
-            cases = OFFICIAL_CASES[task_id]
+            cases = OFFICIAL_CASES_BY_REVISION[(task_id, task_revision)]
         except KeyError as error:
             raise HarnessProtocolError(
-                f"No trusted official harness for task: {task_id}"
+                f"No trusted official harness for task: {task_id}@{task_revision}"
             ) from error
 
         passed = 0

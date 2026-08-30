@@ -352,7 +352,9 @@ async def benchmark_evaluator_fingerprint(
 ) -> str:
     runtime, analyzers, scoring_policy, application_version = await evaluations.runtime_identity()
     ai_identities = {
-        entry.task_id: evaluations.ai_identity(tasks.get(entry.task_id)).model_dump(mode="json")
+        entry.task_id: evaluations.ai_identity(
+            tasks.get_revision(entry.task_id, entry.resolved_task_revision)
+        ).model_dump(mode="json")
         for entry in entries
     }
     return evaluator_fingerprint(
@@ -361,7 +363,9 @@ async def benchmark_evaluator_fingerprint(
             "scoring_policy_version": scoring_policy,
             "analyzer_versions": analyzers,
             "execution": runtime.model_dump(mode="json"),
-            "dataset_tasks": [entry.model_dump(mode="json") for entry in entries],
+            "dataset_tasks": [
+                entry.model_dump(mode="json", exclude_none=True) for entry in entries
+            ],
             "ai_identity_by_task": ai_identities,
         }
     )

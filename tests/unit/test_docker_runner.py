@@ -127,21 +127,21 @@ class FakeAttachedProcess:
 
 
 class StubHarness:
-    async def evaluate(self, task_id: str, transport: object) -> HarnessReport:
-        del task_id, transport
+    async def evaluate(self, task_id: str, task_revision: int, transport: object) -> HarnessReport:
+        del task_id, task_revision, transport
         return HarnessReport(passed=8, failed=0, total=8)
 
 
 class BlockingHarness:
-    async def evaluate(self, task_id: str, transport: object) -> HarnessReport:
-        del task_id, transport
+    async def evaluate(self, task_id: str, task_revision: int, transport: object) -> HarnessReport:
+        del task_id, task_revision, transport
         await asyncio.Event().wait()
         raise AssertionError("unreachable")
 
 
 class InvalidHarness:
-    async def evaluate(self, task_id: str, transport: object) -> HarnessReport:
-        del task_id, transport
+    async def evaluate(self, task_id: str, task_revision: int, transport: object) -> HarnessReport:
+        del task_id, task_revision, transport
         raise HarnessProtocolError("Candidate supervisor returned an invalid response")
 
 

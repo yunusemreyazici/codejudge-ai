@@ -69,10 +69,17 @@ class DatasetTaskEntry(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     task_id: str
+    task_revision: int | None = Field(default=None, ge=1, strict=True)
     task_version: str
     task_fingerprint: str = Field(min_length=64, max_length=64)
     tests_fingerprint: str = Field(min_length=64, max_length=64)
     weight: float = Field(default=1.0, gt=0)
+
+    @property
+    def resolved_task_revision(self) -> int:
+        """Resolve legacy released entries, which canonically mean revision 1."""
+
+        return 1 if self.task_revision is None else self.task_revision
 
 
 class BenchmarkDataset(BaseModel):

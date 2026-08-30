@@ -74,7 +74,12 @@ class InteractiveDockerProcess(Protocol):
 
 
 class OfficialHarness(Protocol):
-    async def evaluate(self, task_id: str, transport: _CandidateTransport) -> HarnessReport: ...
+    async def evaluate(
+        self,
+        task_id: str,
+        task_revision: int,
+        transport: _CandidateTransport,
+    ) -> HarnessReport: ...
 
 
 class DockerCapabilityFailure(StrEnum):
@@ -267,7 +272,11 @@ class DockerPythonRunner:
                 try:
                     async with asyncio.timeout(effective_timeout):
                         transport = _CandidateTransport(process)
-                        report = await self._harness.evaluate(task.specification.id, transport)
+                        report = await self._harness.evaluate(
+                            task.specification.id,
+                            task.revision,
+                            transport,
+                        )
                         await transport.shutdown()
                         exit_code = await process.wait()
                 except TimeoutError:

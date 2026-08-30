@@ -140,7 +140,7 @@ class BenchmarkWorker:
             )
             if current_evaluator != run.evaluator_fingerprint:
                 raise EvaluationInfrastructureError("benchmark_evaluator_identity_mismatch")
-            task = self._tasks.get(claimed.task_id)
+            entry, task = self._datasets.resolve_dataset_task(dataset, claimed.task_id)
             current_tests = tests_fingerprint(task)
             if (
                 task.specification.version != claimed.task_version
@@ -166,6 +166,7 @@ class BenchmarkWorker:
                     _candidate_evaluation_request(claimed, artifact.source),
                     evaluation_id=claimed.evaluation_id,
                     created_at=claimed.created_at,
+                    task_revision=entry.resolved_task_revision,
                 )
             elif (
                 snapshot.source_hash != artifact.source_hash
@@ -354,5 +355,12 @@ def _generation_failure_code(code: str) -> str:
     return mapping.get(code, "provider_error")
 
 
-def _candidate_evaluation_request(sample: BenchmarkSample, source: str) -> EvaluationRequest:
-    return EvaluationRequest(task_id=sample.task_id, language="python", code=source)
+def _candidate_evaluation_request(
+    sample: BenchmarkSample,
+    source: str,
+) -> EvaluationRequest:
+    return EvaluationRequest(
+        task_id=sample.task_id,
+        language="python",
+        code=source,
+    )

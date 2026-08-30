@@ -6,6 +6,24 @@ Datasets are repository-versioned evaluation contracts, not mutable task lists. 
 fingerprint bind ordered tasks, task versions, public prompts, official tests, references, weights,
 and benchmark policy material.
 
+## Logical tasks and immutable revisions
+
+A task has a stable logical ID, such as `ttl-cache`, and an immutable evaluator revision, such as
+`ttl-cache@1`. The public task-specification version remains separate: it describes the public
+contract, while the integer revision selects the exact repository-backed specification, reference,
+and official-test material used to evaluate it.
+
+Dataset entries resolve by logical ID **and exact revision**. Benchmark planning, generation,
+evaluation, evaluator identity, and mutation auditing all use that dataset-selected revision; none
+of those historical paths consult the current/default revision. Normal task listing still shows
+one deliberately configured current revision per logical task so the API remains concise.
+
+The existing definition directory for each task is explicitly revision 1. Future revisions live
+beside it under a numbered `revisions/` directory. There is no authoritative `latest` filesystem
+alias. Released manifests omit the revision field for backward compatibility, and omission has the
+single canonical meaning revision 1. New dataset manifests must record `task_revision` explicitly.
+This preserves the released JSON and hashes while allowing multiple revisions to coexist.
+
 ## Dataset versions
 
 `codejudge-core@1` is the immutable original single-task LRU-cache dataset. It remains available so
@@ -28,6 +46,9 @@ and adds five tasks for capabilities that v2 did not cover. Its fingerprint is:
 All v2 and v3 tasks have equal weight `1.0`. Published v2 results are not v3 results and must not be
 presented as though they covered the expanded task set. No model leaderboard data was generated
 for v3 as part of the dataset implementation.
+
+All tasks referenced by core@1, core@2, and core@3 resolve to revision 1. Their files and official
+behavior remain frozen; adding a current revision 2 later cannot redirect historical resolution.
 
 ## Capability portfolio
 
@@ -79,6 +100,10 @@ and fingerprint. Review additions for:
 - trustworthy expected test counts;
 - reference correctness and sandbox compatibility;
 - balanced portfolio coverage and documented task weights.
+
+Contract-covered corrections to an existing task require a new immutable task revision and a new
+dataset version. A future core@4 can select revision 2 only for corrected tasks and retain revision
+1 for unaffected tasks. It must not patch core@3 or its revision-1 evaluator material in place.
 
 The original selection rationale and common-bug discussion remain in
 [Benchmark Design](../BENCHMARK_DESIGN.md). The current mutation-based discrimination evidence and

@@ -82,10 +82,15 @@ Four plausible mutants expose contract-covered gaps in the released cases:
 - `ttl-cache` does not directly delete an already-expired entry before another operation purges it.
 
 These cases are inferable from the public contracts, but `codejudge-core@3` is released and remains
-immutable. The current registry has one active task revision per task ID and validates every
-dataset entry against that revision. It therefore cannot publish corrected revisions under the
-same task IDs for a new `codejudge-core@4` while keeping core@1–3 resolvable. No core@4 was created;
-doing so safely first requires version-aware task revision resolution.
+immutable. Its entries canonically select revision 1, whose specifications, references, and
+official cases are not patched in place. The version-aware registry can now retain revision 1 while
+a future dataset selects revision 2 for corrected tasks. No core@4 or revision-2 correction was
+created by this architectural change; the four findings above remain the released core@3 result.
+
+When those gaps are addressed, a future core@4 can reference revision 2 for `frame-decoder`,
+`retry-backoff`, and `ttl-cache` while leaving unaffected tasks on revision 1. The mutation audit
+resolves tasks through the selected dataset, so audits of core@3 continue exercising the exact
+revision-1 material rather than whichever revision is configured as current.
 
 ## Portfolio balance and case density
 

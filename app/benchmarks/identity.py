@@ -27,7 +27,10 @@ def dataset_fingerprint(
         {
             "dataset_id": dataset_id,
             "dataset_version": dataset_version,
-            "tasks": [entry.model_dump(mode="json") for entry in sorted(entries, key=_task_key)],
+            "tasks": [
+                entry.model_dump(mode="json", exclude_none=True)
+                for entry in sorted(entries, key=_task_key)
+            ],
         }
     )
 
@@ -80,5 +83,5 @@ def request_fingerprint(payload: object) -> str:
     return canonical_hash(payload)
 
 
-def _task_key(entry: DatasetTaskEntry) -> tuple[str, str]:
-    return entry.task_id, entry.task_version
+def _task_key(entry: DatasetTaskEntry) -> tuple[str, int, str]:
+    return entry.task_id, entry.resolved_task_revision, entry.task_version

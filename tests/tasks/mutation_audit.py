@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
+from app.benchmarks.datasets import BenchmarkDatasetRegistry
+from app.benchmarks.models import BenchmarkDataset
 from app.evaluator.models import RunnerResult
 from app.tasks.registry import RegisteredTask
 
@@ -140,6 +142,18 @@ async def execute_mutation(
         total=result.total,
         duration_seconds=result.duration_seconds,
     )
+
+
+async def execute_dataset_mutation(
+    runner: CandidateRunner,
+    datasets: BenchmarkDatasetRegistry,
+    dataset: BenchmarkDataset,
+    mutation: MutationDefinition,
+) -> MutationOutcome:
+    """Audit the exact task revision selected by an immutable dataset entry."""
+
+    _, task = datasets.resolve_dataset_task(dataset, mutation.task_id)
+    return await execute_mutation(runner, task, mutation)
 
 
 def summarize_mutations(outcomes: list[MutationOutcome]) -> MutationSummary:

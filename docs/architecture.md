@@ -70,7 +70,8 @@ rate limit, refusal, malformed response, or generation failure can make AI `part
 
 ```mermaid
 flowchart TD
-    YAML[Commit-safe YAML] --> PREFLIGHT[Identity and maximum-cost preflight]
+    YAML[Commit-safe YAML] --> DATASET[Immutable dataset and exact task revisions]
+    DATASET --> PREFLIGHT[Identity and maximum-cost preflight]
     PREFLIGHT --> QUEUE[(Benchmark run and samples)]
     QUEUE --> BW[Benchmark worker]
     BW --> PROVIDER[Configured coding provider]
@@ -83,6 +84,14 @@ flowchart TD
 The provider receives the versioned public coding prompt only. A generated candidate is persisted
 only when nonblank and is then evaluated as untrusted source. Benchmark aggregation reads stored
 artifacts and snapshots; it does not rerun providers or evaluations.
+
+Task identity separates a human-facing logical ID from an immutable integer evaluator revision.
+Released task directories are revision 1; additional revisions can coexist in explicit numbered
+subdirectories. Ordinary API task listing uses a deliberately configured default once per logical
+task. Dataset execution is stricter: manifests bind an exact revision, and planning, evaluator
+fingerprinting, worker execution, trusted official cases, and mutation auditing resolve that exact
+identity without a `latest` fallback. Historical manifests that omit the field canonically mean
+revision 1, preserving their bytes and dataset fingerprints.
 
 ## Trust boundaries
 

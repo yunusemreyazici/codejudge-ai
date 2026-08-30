@@ -5,6 +5,7 @@ import os
 import pytest
 import pytest_asyncio
 
+from app.benchmarks.datasets import BenchmarkDatasetRegistry
 from app.core.config import Settings
 from app.runners.docker_runner import DockerPythonRunner
 from app.runners.factory import create_python_runner
@@ -12,11 +13,14 @@ from app.tasks.registry import TaskRegistry
 from tests.tasks.mutation_audit import (
     MutationClassification,
     MutationDefinition,
-    execute_mutation,
+    execute_dataset_mutation,
 )
 from tests.tasks.mutation_catalog import MUTATIONS_BY_TASK
 
 pytestmark = pytest.mark.sandbox
+TASKS = TaskRegistry.default()
+DATASETS = BenchmarkDatasetRegistry.default(TASKS)
+CORE_V3 = DATASETS.get("codejudge-core", "3")
 
 REPRESENTATIVE_MUTATIONS = tuple(
     next(
@@ -50,9 +54,7 @@ async def test_representative_mutant_uses_private_safe_official_harness(
     mutation_runner: DockerPythonRunner,
     mutation: MutationDefinition,
 ) -> None:
-    task = TaskRegistry.default().get(mutation.task_id)
-
-    outcome = await execute_mutation(mutation_runner, task, mutation)
+    outcome = await execute_dataset_mutation(mutation_runner, DATASETS, CORE_V3, mutation)
 
     assert outcome.classification == MutationClassification.KILLED
     assert outcome.total > 0

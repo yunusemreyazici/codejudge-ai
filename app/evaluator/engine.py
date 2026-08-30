@@ -67,9 +67,14 @@ class EvaluationEngine:
     async def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
         return (await self.evaluate_outcome(request)).result
 
-    async def evaluate_outcome(self, request: EvaluationRequest) -> EvaluationOutcome:
+    async def evaluate_outcome(
+        self,
+        request: EvaluationRequest,
+        *,
+        task_revision: int | None = None,
+    ) -> EvaluationOutcome:
         started_at = time.monotonic()
-        task = self.prepare_request(request)
+        task = self.prepare_request(request, task_revision=task_revision)
 
         runner = self._runners[request.language]
         logger.info("evaluation started task_id=%s language=%s", request.task_id, request.language)
@@ -133,13 +138,18 @@ class EvaluationEngine:
         )
         return EvaluationOutcome(result=result, runner_result=runner_result, task=task)
 
-    def prepare_request(self, request: EvaluationRequest) -> RegisteredTask:
+    def prepare_request(
+        self,
+        request: EvaluationRequest,
+        *,
+        task_revision: int | None = None,
+    ) -> RegisteredTask:
         """Validate a request and resolve the trusted task without executing candidate code."""
         code_size = len(request.code.encode("utf-8"))
         if code_size > self._max_code_size:
             raise CodeSizeExceededError(code_size, self._max_code_size)
 
-        task = self._registry.get(request.task_id)
+        task = self._registry.get(request.task_id, revision=task_revision)
         if request.language != task.specification.language:
             raise UnsupportedLanguageError(request.language)
         runner = self._runners.get(request.language)

@@ -15,6 +15,7 @@ from tests.tasks.mutation_audit import (
     MutationClassification,
     MutationDefinition,
     MutationOutcome,
+    execute_dataset_mutation,
     execute_mutation,
     summarize_mutations,
 )
@@ -76,9 +77,11 @@ def test_equivalent_and_surviving_mutants_have_explicit_reasons() -> None:
 async def test_registered_mutation_has_a_deterministic_audit_outcome(
     mutation: MutationDefinition,
 ) -> None:
-    registry = TaskRegistry.default()
+    tasks = TaskRegistry.default()
+    datasets = BenchmarkDatasetRegistry.default(tasks)
+    dataset = datasets.get("codejudge-core", "3")
 
-    outcome = await execute_mutation(PythonRunner(), registry.get(mutation.task_id), mutation)
+    outcome = await execute_dataset_mutation(PythonRunner(), datasets, dataset, mutation)
 
     assert outcome.classification == _expected_classification(mutation)
     assert outcome.total > 0

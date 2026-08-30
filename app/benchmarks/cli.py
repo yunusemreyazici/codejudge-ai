@@ -226,8 +226,9 @@ async def _probe(
         config, environment
     )[model.provider_id]
     tasks = TaskRegistry.default()
-    dataset = BenchmarkDatasetRegistry.default(tasks).get(config.dataset.id, config.dataset.version)
-    task = tasks.get(dataset.task_entries[0].task_id).specification
+    datasets = BenchmarkDatasetRegistry.default(tasks)
+    dataset = datasets.get(config.dataset.id, config.dataset.version)
+    task = datasets.resolve_task(dataset.task_entries[0]).specification
     provider = OpenAICompatibleProvider(
         base_url=base_url,
         api_key=credential,

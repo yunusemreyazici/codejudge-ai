@@ -124,7 +124,12 @@ def privacy_probe():
 
 
 class _PrivacyHarness:
-    async def evaluate(self, task_id: str, transport: CandidateTransport) -> HarnessReport:
+    async def evaluate(
+        self,
+        task_id: str,
+        task_revision: int,
+        transport: CandidateTransport,
+    ) -> HarnessReport:
         response = await transport.request(
             {
                 "op": "run_case",
@@ -140,7 +145,9 @@ class _PrivacyHarness:
         outcome = outcomes[0]
         result = outcome.get("result") if isinstance(outcome, Mapping) else None
         safe = (
-            isinstance(result, Mapping)
+            task_id == "privacy-probe"
+            and task_revision == 2
+            and isinstance(result, Mapping)
             and result.get("matches") == []
             and result.get("workspace") == ["solution.py"]
             and result.get("sensitive") == []
@@ -191,6 +198,7 @@ async def test_candidate_runtime_cannot_read_private_tests_or_reference(
         ),
         tests_path=tests_path,
         reference_path=reference_path,
+        revision=2,
     )
 
     runner = _runner()

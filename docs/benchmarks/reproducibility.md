@@ -9,7 +9,8 @@ an externally hosted model is perfectly reproducible.
 
 Run and sample provenance includes:
 
-- dataset ID, version, fingerprint, ordered task weights, and task/test fingerprints;
+- dataset ID, version, fingerprint, ordered logical task IDs, immutable task revisions, weights,
+  and task/test fingerprints;
 - public coding-prompt version and hash;
 - benchmark-policy version;
 - provider and model identities, parameters, output mode, timeout, and concurrency;
@@ -19,6 +20,13 @@ Run and sample provenance includes:
 - deterministic results and optional AI identities kept as separate evidence.
 
 Provider seeds and response hashes improve provenance but cannot freeze a hosted provider backend.
+
+Released dataset entries that predate explicit task revisions canonically resolve to revision 1.
+New manifests include `task_revision`. The dataset registry verifies the exact revision's public
+task version and task/test fingerprints before planning. The benchmark worker resolves that same
+entry from the persisted run's immutable dataset identity before generation and evaluation; it
+does not fall back to the registry's current revision. A run therefore remains tied to the same
+evaluator material even after another revision of its logical task is added.
 
 ## Historical inspection
 
@@ -79,3 +87,5 @@ must not rewrite the archive to erase the historical reporting context.
 - Record semantic incompatibility instead of forcing cross-run deltas.
 - Keep benchmark configs and archives unchanged during documentation, release, and test work unless
   their mutation is the explicit task.
+- Never repoint a released dataset entry at a newer task revision. Publish a new dataset identity
+  and retain every revision needed to replay history.
