@@ -34,8 +34,8 @@ _CONTROL_OUTPUT_LIMIT_BYTES = 64 * 1024
 _REPORT_LIMIT_BYTES = 64 * 1024
 _CAPABILITY_ATTEMPTS = 3
 _CAPABILITY_RETRY_DELAY_SECONDS = 0.25
-_OOM_EVENT_ATTEMPTS = 5
-_OOM_EVENT_RETRY_DELAY_SECONDS = 0.05
+_OOM_EVENT_ATTEMPTS = 9
+_OOM_EVENT_RETRY_DELAY_SECONDS = 0.25
 _SANDBOX_UID = 10001
 _SANDBOX_GID = 10001
 
@@ -793,7 +793,7 @@ class DockerPythonRunner:
                 if action == "oom" and exact_actor:
                     return True
             if attempt + 1 < _OOM_EVENT_ATTEMPTS:
-                await asyncio.sleep(_OOM_EVENT_RETRY_DELAY_SECONDS * (attempt + 1))
+                await asyncio.sleep(_OOM_EVENT_RETRY_DELAY_SECONDS)
                 event_until = self._event_timestamp()
         return False
 

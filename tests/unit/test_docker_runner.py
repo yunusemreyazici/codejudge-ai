@@ -226,6 +226,7 @@ async def test_generated_test_runner_applies_hard_memory_and_swap_ceiling(
         index for index, command in enumerate(client.commands) if command[0] == "rm"
     )
     assert inspect_index < remove_index
+    assert client.oom_event_queries == 0
 
 
 async def test_runner_kills_and_removes_timed_out_container(correct_lru: str) -> None:
@@ -239,6 +240,7 @@ async def test_runner_kills_and_removes_timed_out_container(correct_lru: str) ->
     assert result.oom_killed is False
     assert result.enforced_timeout_seconds == 0.01
     assert any(command[0] == "kill" for command in client.commands)
+    assert client.oom_event_queries == 0
     inspect_index = next(
         index for index, command in enumerate(client.commands) if command[0] == "inspect"
     )
@@ -256,6 +258,7 @@ async def test_runner_uses_inspect_metadata_for_oom(correct_lru: str) -> None:
 
     assert result.oom_killed is True
     assert result.exit_code == 137
+    assert client.oom_event_queries == 0
     inspect_index = next(
         index for index, command in enumerate(client.commands) if command[0] == "inspect"
     )
@@ -290,6 +293,7 @@ async def test_runner_uses_exact_container_oom_event_when_inspect_is_false(
     assert "event=oom" in events
     assert "--since" in events
     assert "--until" in events
+    assert client.oom_event_queries == 1
     assert client.commands[-1][0:2] == ["rm", "--force"]
 
 
@@ -306,7 +310,7 @@ async def test_runner_does_not_treat_exit_137_without_oom_evidence_as_oom(
     assert result.exit_code == 137
     assert result.oom_killed is False
     assert result.sandbox_error == "Sandbox exited without a valid structured test report."
-    assert client.oom_event_queries == 5
+    assert client.oom_event_queries == 9
     assert client.commands[-1][0:2] == ["rm", "--force"]
 
 
@@ -323,7 +327,7 @@ async def test_runner_retries_exact_oom_event_until_daemon_publishes_it(
                 "Attributes": {"name": "ignored-because-id-matches"},
             },
         },
-        oom_event_visible_after=1,
+        oom_event_visible_after=5,
     )
 
     result = await _runner(client).evaluate(TaskRegistry.default().get("lru-cache"), correct_lru)
@@ -331,7 +335,7 @@ async def test_runner_retries_exact_oom_event_until_daemon_publishes_it(
     assert result.oom_killed is True
     assert result.timed_out is False
     assert result.exit_code == 137
-    assert client.oom_event_queries == 2
+    assert client.oom_event_queries == 6
     event_indexes = [
         index for index, command in enumerate(client.commands) if command[0] == "events"
     ]
