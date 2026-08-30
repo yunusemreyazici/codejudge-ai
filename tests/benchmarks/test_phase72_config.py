@@ -76,6 +76,24 @@ def test_selected_dataset_version_controls_task_and_generation_count() -> None:
     assert expanded_plan.dataset_fingerprint != historical_plan.dataset_fingerprint
 
 
+def test_core_v3_and_v4_keep_planning_counts_while_changing_revision_identity() -> None:
+    base = load_benchmark_config(EXAMPLE)
+    plans = {}
+    for version in ("3", "4"):
+        config = base.model_copy(
+            update={"dataset": base.dataset.model_copy(update={"version": version})}
+        )
+        plans[(version, 2)] = build_plan(config, environment={})
+        plans[(version, 1)] = build_plan(
+            config.model_copy(update={"models": config.models[:1]}), environment={}
+        )
+
+    assert plans[("3", 1)].planned_generations == plans[("4", 1)].planned_generations == 12
+    assert plans[("3", 2)].planned_generations == plans[("4", 2)].planned_generations == 24
+    assert plans[("3", 2)].task_count == plans[("4", 2)].task_count == 12
+    assert plans[("3", 2)].dataset_fingerprint != plans[("4", 2)].dataset_fingerprint
+
+
 def test_unknown_pricing_is_not_zero_and_prevents_budget_enforcement() -> None:
     config = load_benchmark_config(EXAMPLE)
     config = config.model_copy(update={"pricing": {}})

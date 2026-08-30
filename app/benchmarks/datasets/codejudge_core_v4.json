@@ -1,0 +1,104 @@
+{
+  "dataset_id": "codejudge-core",
+  "dataset_version": "4",
+  "title": "CodeJudge Core v4",
+  "description": "A discrimination-hardened twelve-task benchmark retaining the core v3 portfolio with exact revision-2 evaluator evidence for frame decoding, retry boundaries, and TTL expiry behavior.",
+  "task_entries": [
+    {
+      "task_id": "lru-cache",
+      "task_revision": 1,
+      "task_version": "1.0",
+      "task_fingerprint": "36326c717bf1133e4350f8aad230145ffa008c17c06697faca0dfcffd6789ab7",
+      "tests_fingerprint": "54786520687b887b982ed804ff483f599607ced06f09dd04706f66316dcb7c5b",
+      "weight": 1.0
+    },
+    {
+      "task_id": "ttl-cache",
+      "task_revision": 2,
+      "task_version": "1.0",
+      "task_fingerprint": "d01f51b6543e4836a4638cb14a7b954cb917cace0a86526610701d198c686683",
+      "tests_fingerprint": "bcbc55b81814a1cff20f9d4e861bce2e32b1decb39a70af83a222757fb0778da",
+      "weight": 1.0
+    },
+    {
+      "task_id": "rate-limiter",
+      "task_revision": 1,
+      "task_version": "1.0",
+      "task_fingerprint": "8fa788f2335cb904651617584730b270fdf0622e778cc9793b571668f88b7be4",
+      "tests_fingerprint": "cbfe634e3847d082e634a936b8d44eadddf4c88d2e1504596112c5a7f25bf54c",
+      "weight": 1.0
+    },
+    {
+      "task_id": "retry-backoff",
+      "task_revision": 2,
+      "task_version": "1.0",
+      "task_fingerprint": "91d7cf1758e7ad4a6d5a6279ea2b8b220b9904bc489f41c1886abe990b300fe5",
+      "tests_fingerprint": "bb0577238301e4a99c09a7a920874a19febd5db6816f0c82bcafb05293894f53",
+      "weight": 1.0
+    },
+    {
+      "task_id": "dependency-resolver",
+      "task_revision": 1,
+      "task_version": "1.0",
+      "task_fingerprint": "cfcc510c677ebb4d90f49594f413803f8634dc01d4cb60c0362cce11e376e83b",
+      "tests_fingerprint": "9446347072c3b10b3a8f468bd6484e6e7332ea9e4b434691271170d9500f458c",
+      "weight": 1.0
+    },
+    {
+      "task_id": "async-batch-processor",
+      "task_revision": 1,
+      "task_version": "1.0",
+      "task_fingerprint": "98f1782f22c1a5341ae3aa30bb04c9befdaa93e974e6c471145836860577b9a1",
+      "tests_fingerprint": "82129e90b0156a00461d1f69a9a7dcc83ca80c0c054a48d0037d47aa167bfedd",
+      "weight": 1.0
+    },
+    {
+      "task_id": "circuit-breaker",
+      "task_revision": 1,
+      "task_version": "1.0",
+      "task_fingerprint": "64dcb0fea94ec7f0dccc74ee6bbc4319e06997c67d38670bab0f46ee41c37ed3",
+      "tests_fingerprint": "21000a786964f16e0167b90bcc37f18f689311c95021ba73dbdcbc2437fbbad7",
+      "weight": 1.0
+    },
+    {
+      "task_id": "structured-event-parser",
+      "task_revision": 1,
+      "task_version": "1.0",
+      "task_fingerprint": "ecfd9670231f9008572c1534cf5eb4547387851e4f96122a42b3d40a2ac46dc1",
+      "tests_fingerprint": "be0c453b8a2e43b47155c273c790fc008f6adbb2d40c268aececbc49b992fd4f",
+      "weight": 1.0
+    },
+    {
+      "task_id": "interval-reservation",
+      "task_revision": 1,
+      "task_version": "1.0",
+      "task_fingerprint": "bf432b76f3feb3434628347072c61a0996441d33d7048a18865596de1225c125",
+      "tests_fingerprint": "0d775029df37dc731164c5b3adb0fa408a23ea7fb88ad5067fc40cb46bde30f9",
+      "weight": 1.0
+    },
+    {
+      "task_id": "config-layer-merge",
+      "task_revision": 1,
+      "task_version": "1.0",
+      "task_fingerprint": "174aff54c17a312cf7d8c887feb49807a60a8f638cd7a4e092573116ca242c3c",
+      "tests_fingerprint": "449c009c4fd9f63612ec0cc1eb2306df17cd3921cc05a77ecb1848c9139fd294",
+      "weight": 1.0
+    },
+    {
+      "task_id": "logical-path",
+      "task_revision": 1,
+      "task_version": "1.0",
+      "task_fingerprint": "e04fcf94a03b5b488352d7df9785f6bd7fcdc378fddffc4c129ae4c6fd7af6ad",
+      "tests_fingerprint": "4831548979a378974077e835548a284488494a255344cfdd88f8fd51ce6d6d9b",
+      "weight": 1.0
+    },
+    {
+      "task_id": "frame-decoder",
+      "task_revision": 2,
+      "task_version": "1.0",
+      "task_fingerprint": "282e696dc6580e6c1abd40b84cc8516bf9efd091b62341d6314aada38e5823e8",
+      "tests_fingerprint": "3fdef157667e6237a220b7cdca683ac596f1247c1e4c460dbdc15e495d123c14",
+      "weight": 1.0
+    }
+  ]
+}

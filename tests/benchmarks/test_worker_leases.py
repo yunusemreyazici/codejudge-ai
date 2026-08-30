@@ -148,20 +148,26 @@ class GatedEvaluations:
         return snapshot_fixture(source=request.code, evaluation_id=evaluation_id)
 
 
-def _sample_and_config() -> tuple[BenchmarkSample, BenchmarkModelConfig, BenchmarkRun]:
+def _sample_and_config(
+    *,
+    task_id: str = "lru-cache",
+    dataset_version: str = "1",
+) -> tuple[BenchmarkSample, BenchmarkModelConfig, BenchmarkRun]:
     now = datetime.now(UTC)
     run_id = uuid4()
     config_id = uuid4()
     tasks = TaskRegistry.default()
-    task = tasks.get("lru-cache")
+    datasets = BenchmarkDatasetRegistry.default(tasks)
+    dataset = datasets.get("codejudge-core", dataset_version)
+    _, task = datasets.resolve_dataset_task(dataset, task_id)
     tests_hash = _tests_fingerprint(task)
     sample = BenchmarkSample(
         benchmark_sample_id=uuid4(),
         benchmark_run_id=run_id,
         model_config_id=config_id,
         evaluation_id=uuid4(),
-        task_id="lru-cache",
-        task_version="1.0",
+        task_id=task_id,
+        task_version=task.specification.version,
         task_fingerprint=task_fingerprint(task, tests_hash),
         tests_fingerprint=tests_hash,
         task_weight=1,
@@ -192,8 +198,8 @@ def _sample_and_config() -> tuple[BenchmarkSample, BenchmarkModelConfig, Benchma
         created_at=now,
         status=BenchmarkRunStatus.RUNNING,
         dataset_id="codejudge-core",
-        dataset_version="1",
-        dataset_fingerprint="e" * 64,
+        dataset_version=dataset_version,
+        dataset_fingerprint=dataset.dataset_fingerprint,
         benchmark_policy_version="1",
         coding_prompt_version="2",
         coding_prompt_hash="c" * 64,
@@ -270,6 +276,38 @@ async def test_long_provider_and_evaluation_paths_renew_before_initial_lease_exp
     assert provider.calls == evaluations.calls == repository.completions == 1
     assert evaluations.task_revisions == [1]
     assert repository.artifact is not None
+
+
+async def test_core_v4_worker_passes_exact_dataset_revision_to_evaluator() -> None:
+    sample, config, run = _sample_and_config(
+        task_id="frame-decoder",
+        dataset_version="4",
+    )
+    provider = GatedProvider()
+    evaluations = GatedEvaluations()
+    repository = OperationalRepository(run, config)
+    tasks = TaskRegistry.default()
+    worker = BenchmarkWorker(
+        worker_id="lease-test",
+        providers={"fake": provider},
+        repository=repository,  # type: ignore[arg-type]
+        queue=None,  # type: ignore[arg-type]
+        datasets=BenchmarkDatasetRegistry.default(tasks),
+        tasks=tasks,
+        evaluations=evaluations,  # type: ignore[arg-type]
+        max_code_size=100_000,
+        lease_seconds=1,
+        retry_base_delay_seconds=0.01,
+    )
+
+    with patch(
+        "app.benchmarks.worker.benchmark_evaluator_fingerprint",
+        new=AsyncMock(return_value=run.evaluator_fingerprint),
+    ):
+        assert await worker._process_claimed(sample) is True
+
+    assert evaluations.task_revisions == [2]
+    assert provider.calls == repository.completions == 1
 
 
 async def test_transient_renewal_failure_recovers_before_ownership_is_lost() -> None:

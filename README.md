@@ -101,9 +101,10 @@ See [scoring](docs/evaluation/scoring.md), [correctness](docs/evaluation/correct
 The latest completed broad screening runs used `codejudge-core@2`, a seven-task engineering
 portfolio. The headline is the eligible winner under the strict completeness policy.
 
-`codejudge-core@3` expands the available portfolio to twelve tasks. The published results below
-remain historical v2 results and are not results for the expanded dataset; no model/provider runs
-were made to populate v3 during the dataset implementation.
+`codejudge-core@4` is the current twelve-task portfolio. It retains core@3's logical tasks while
+advancing three immutable task revisions to close documented test-discrimination gaps. The
+published results below remain historical core@2 results; no model/provider runs were made for
+core@3 or core@4 during their dataset implementations.
 
 | Benchmark | Eligible winner | Primary mean | Generation success | Evaluation coverage |
 | --- | --- | ---: | ---: | ---: |

@@ -93,6 +93,29 @@ def test_dataset_v3_expands_diversity_without_mutating_v2() -> None:
     )
 
 
+def test_dataset_v4_hardens_three_revisions_without_mutating_v3() -> None:
+    tasks = TaskRegistry.default()
+    registry = BenchmarkDatasetRegistry.default(tasks)
+    third = registry.get("codejudge-core", "3")
+    fourth = registry.get("codejudge-core", "4")
+
+    assert [entry.task_id for entry in fourth.task_entries] == [
+        entry.task_id for entry in third.task_entries
+    ]
+    assert {entry.task_id: entry.resolved_task_revision for entry in fourth.task_entries} == {
+        entry.task_id: (
+            2 if entry.task_id in {"frame-decoder", "retry-backoff", "ttl-cache"} else 1
+        )
+        for entry in third.task_entries
+    }
+    assert fourth.dataset_fingerprint == (
+        "ed5b1a5c0263ca6d172c31c15de910795815247f238cfefc3975624ce4f296d0"
+    )
+    assert third.dataset_fingerprint == (
+        "1191d27db4643e9c18a0063ea9da1d2fb56fc363f0d2146740b53eee05e94522"
+    )
+
+
 def test_dataset_registry_rejects_duplicate_task_entries(tmp_path: Path) -> None:
     tasks = TaskRegistry.default()
     task = tasks.get("lru-cache")

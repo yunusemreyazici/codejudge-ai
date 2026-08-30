@@ -28,6 +28,12 @@ entry from the persisted run's immutable dataset identity before generation and 
 does not fall back to the registry's current revision. A run therefore remains tied to the same
 evaluator material even after another revision of its logical task is added.
 
+Core@4 explicitly records all twelve task revisions: revision 2 for `frame-decoder`,
+`retry-backoff`, and `ttl-cache`, and revision 1 for the remaining tasks. Core@3 continues to
+resolve revision 1 for all twelve tasks even when the default registry selects those three newer
+revisions. Export and report paths recover revision provenance from the run's immutable dataset;
+historical core@3 rows are never reinterpreted as core@4 evaluations.
+
 ## Historical inspection
 
 These commands read persisted runs and immutable evaluation snapshots. They do not construct a

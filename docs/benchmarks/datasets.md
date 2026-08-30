@@ -36,19 +36,33 @@ published benchmark results. Its preserved historical fingerprint is:
 ee0f631d6810c039e84d90d9f2b77f20dcabbe27bef0af600695ab9cb1111988
 ```
 
-`codejudge-core@3` is the current twelve-task portfolio. It preserves all seven v2 task identities
+`codejudge-core@3` is the immutable original twelve-task portfolio. It preserves all seven v2 task identities
 and adds five tasks for capabilities that v2 did not cover. Its fingerprint is:
 
 ```text
 1191d27db4643e9c18a0063ea9da1d2fb56fc363f0d2146740b53eee05e94522
 ```
 
-All v2 and v3 tasks have equal weight `1.0`. Published v2 results are not v3 results and must not be
-presented as though they covered the expanded task set. No model leaderboard data was generated
-for v3 as part of the dataset implementation.
+`codejudge-core@4` retains the same twelve logical tasks and equal weights while selecting revision
+2 for `frame-decoder`, `retry-backoff`, and `ttl-cache`. The other nine tasks remain revision 1.
+Its fingerprint is:
+
+```text
+ed5b1a5c0263ca6d172c31c15de910795815247f238cfefc3975624ce4f296d0
+```
+
+The revised evidence distinguishes Python character counts across Unicode frame chunks, accepts
+the documented equal retry base/cap boundary, purges expired TTL entries before capacity eviction,
+and treats deletion of an expired entry as unsuccessful. Public contracts, task weights, logical
+task IDs, timeouts, and trusted reference behavior are unchanged.
+
+All v2, v3, and v4 tasks have equal weight `1.0`. Published v2 results are not v3 or v4 results and
+must not be presented as though they covered either twelve-task dataset. No model leaderboard data
+was generated for v3 or v4 as part of their dataset implementations.
 
 All tasks referenced by core@1, core@2, and core@3 resolve to revision 1. Their files and official
-behavior remain frozen; adding a current revision 2 later cannot redirect historical resolution.
+behavior remain frozen. Core@4 records every revision explicitly and cannot redirect historical
+resolution even though the three hardened revisions are now the normal current/default tasks.
 
 ## Capability portfolio
 
@@ -102,8 +116,8 @@ and fingerprint. Review additions for:
 - balanced portfolio coverage and documented task weights.
 
 Contract-covered corrections to an existing task require a new immutable task revision and a new
-dataset version. A future core@4 can select revision 2 only for corrected tasks and retain revision
-1 for unaffected tasks. It must not patch core@3 or its revision-1 evaluator material in place.
+dataset version. Core@4 demonstrates this by selecting revision 2 only for three corrected tasks
+and retaining revision 1 for unaffected tasks without patching core@3 in place.
 
 The original selection rationale and common-bug discussion remain in
 [Benchmark Design](../BENCHMARK_DESIGN.md). The current mutation-based discrimination evidence and

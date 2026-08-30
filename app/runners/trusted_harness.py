@@ -1081,6 +1081,65 @@ def _frame_decoder_cases() -> tuple[OfficialCase, ...]:
     )
 
 
+def _ttl_v2_cases() -> tuple[OfficialCase, ...]:
+    cases = list(_ttl_cases())
+    cases[4] = _case(
+        "expired entries are purged before live LRU eviction",
+        *cases[4].steps,
+        _expect(_construct("TTLCache", "mru", 2), None),
+        _expect(_method("mru", "put", "live", 1, ttl=20, now=0), None),
+        _expect(_method("mru", "put", "expired", 2, ttl=1, now=0), None),
+        _expect(_method("mru", "put", "new", 3, ttl=20, now=2), None),
+        _expect(_method("mru", "get", "live", 2), 1),
+        _expect(_method("mru", "get", "expired", 2), None),
+        _expect(_method("mru", "get", "new", 2), 3),
+    )
+    cases[6] = _case(
+        "delete live missing expired and repeated",
+        *cases[6].steps,
+        _expect(_construct("TTLCache", "expiry", 2), None),
+        _expect(_method("expiry", "put", "stale", 1, ttl=1, now=0), None),
+        _expect(_method("expiry", "put", "live", 2, ttl=10, now=0), None),
+        _expect(_method("expiry", "delete", "stale", 1), False),
+        _expect(_method("expiry", "delete", "missing", 1), False),
+        _expect(_method("expiry", "delete", "live", 1), True),
+        _expect(_method("expiry", "delete", "live", 1), False),
+    )
+    return tuple(cases)
+
+
+def _retry_v2_cases() -> tuple[OfficialCase, ...]:
+    cases = list(_retry_cases())
+    cases[1] = _case(
+        "inclusive stable cap including equal base and cap",
+        *cases[1].steps,
+        _expect(_function("retry_delay", 1, 4, 4), 4),
+        _expect(_function("retry_delay", 2, 4, 4), 4),
+        _expect(_function("retry_delay", 10_000, 4, 4, 3), 4),
+        _expect(_function("retry_delay", 1, 5, 4), exception="ValueError"),
+    )
+    return tuple(cases)
+
+
+def _frame_decoder_v2_cases() -> tuple[OfficialCase, ...]:
+    cases = list(_frame_decoder_cases())
+    cases[-1] = _case(
+        "unicode payload character counts across chunk boundaries",
+        *cases[-1].steps,
+        _expect(_construct("LengthPrefixedDecoder", "split", 10), None),
+        _expect(_method("split", "feed", "5"), []),
+        _expect(_method("split", "feed", ":ab"), []),
+        _expect(_method("split", "feed", "🙂"), []),
+        _expect(_method("split", "feed", "ç"), []),
+        _expect(_method("split", "feed", "d"), ["ab🙂çd"]),
+        _expect(_construct("LengthPrefixedDecoder", "boundary", 10), None),
+        _expect(_method("boundary", "feed", "4:🙂"), []),
+        _expect(_method("boundary", "feed", "ab"), []),
+        _expect(_method("boundary", "feed", "ç"), ["🙂abç"]),
+    )
+    return tuple(cases)
+
+
 OFFICIAL_CASES: Mapping[str, tuple[OfficialCase, ...]] = {
     "lru-cache": _lru_cases(),
     "ttl-cache": _ttl_cases(),
@@ -1097,7 +1156,10 @@ OFFICIAL_CASES: Mapping[str, tuple[OfficialCase, ...]] = {
 }
 
 OFFICIAL_CASES_BY_REVISION: Mapping[tuple[str, int], tuple[OfficialCase, ...]] = {
-    (task_id, 1): cases for task_id, cases in OFFICIAL_CASES.items()
+    **{(task_id, 1): cases for task_id, cases in OFFICIAL_CASES.items()},
+    ("frame-decoder", 2): _frame_decoder_v2_cases(),
+    ("retry-backoff", 2): _retry_v2_cases(),
+    ("ttl-cache", 2): _ttl_v2_cases(),
 }
 
 OFFICIAL_TEST_CASE_COUNTS: Mapping[str, int] = {

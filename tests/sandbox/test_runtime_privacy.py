@@ -6,11 +6,12 @@ from pathlib import Path
 
 import pytest
 
+from app.benchmarks.datasets import BenchmarkDatasetRegistry
 from app.core.config import Settings
 from app.evaluator.models import Task
 from app.runners.docker_runner import DockerPythonRunner, DockerSandboxConfig
 from app.runners.trusted_harness import CandidateTransport, HarnessReport
-from app.tasks.registry import RegisteredTask
+from app.tasks.registry import RegisteredTask, TaskRegistry
 
 pytestmark = pytest.mark.sandbox
 
@@ -124,6 +125,10 @@ def privacy_probe():
 
 
 class _PrivacyHarness:
+    def __init__(self, expected_task_id: str, expected_revision: int) -> None:
+        self._expected_task_id = expected_task_id
+        self._expected_revision = expected_revision
+
     async def evaluate(
         self,
         task_id: str,
@@ -145,8 +150,8 @@ class _PrivacyHarness:
         outcome = outcomes[0]
         result = outcome.get("result") if isinstance(outcome, Mapping) else None
         safe = (
-            task_id == "privacy-probe"
-            and task_revision == 2
+            task_id == self._expected_task_id
+            and task_revision == self._expected_revision
             and isinstance(result, Mapping)
             and result.get("matches") == []
             and result.get("workspace") == ["solution.py"]
@@ -160,7 +165,7 @@ class _PrivacyHarness:
         return HarnessReport(passed=int(safe), failed=int(not safe), total=1)
 
 
-def _runner() -> DockerPythonRunner:
+def _runner(expected_task_id: str, expected_revision: int) -> DockerPythonRunner:
     settings = Settings()
     return DockerPythonRunner(
         DockerSandboxConfig(
@@ -171,7 +176,7 @@ def _runner() -> DockerPythonRunner:
             timeout_seconds=settings.sandbox_timeout_seconds,
             output_limit_bytes=settings.sandbox_output_limit_bytes,
         ),
-        harness=_PrivacyHarness(),
+        harness=_PrivacyHarness(expected_task_id, expected_revision),
     )
 
 
@@ -201,7 +206,33 @@ async def test_candidate_runtime_cannot_read_private_tests_or_reference(
         revision=2,
     )
 
-    runner = _runner()
+    runner = _runner("privacy-probe", 2)
+    capability = await runner.check_capability()
+    if not capability.available:
+        diagnostic = f"reason={capability.reason or 'unknown'} detail={capability.detail}"
+        if os.getenv("CODEJUDGE_REQUIRE_DOCKER") == "1":
+            pytest.fail(f"Docker sandbox is required: {diagnostic}")
+        pytest.skip(diagnostic)
+
+    result = await runner.evaluate(task, _MALICIOUS_CANDIDATE)
+
+    assert result.infrastructure_error is None
+    assert result.sandbox_error is None
+    assert result.passed == result.total == 1
+    assert result.failed == 0
+
+
+@pytest.mark.parametrize("task_id", ["frame-decoder", "retry-backoff", "ttl-cache"])
+async def test_core_v4_revision_paths_and_private_material_are_not_visible(
+    task_id: str,
+) -> None:
+    tasks = TaskRegistry.default()
+    datasets = BenchmarkDatasetRegistry.default(tasks)
+    core_v4 = datasets.get("codejudge-core", "4")
+    task = datasets.resolve_dataset_task(core_v4, task_id)[1]
+    assert task.revision == 2
+
+    runner = _runner(task_id, 2)
     capability = await runner.check_capability()
     if not capability.available:
         diagnostic = f"reason={capability.reason or 'unknown'} detail={capability.detail}"

@@ -3,9 +3,10 @@
 [← Project README](../../README.md) · [Documentation index](../README.md) ·
 [Datasets](datasets.md)
 
-This page records a structural discrimination audit of the twelve tasks in
-`codejudge-core@3`. It does not report model accuracy. No provider was invoked, and no historical
-dataset, benchmark run, or archive was changed.
+This page records the original structural discrimination audit of the twelve tasks in
+`codejudge-core@3` and the focused follow-up for `codejudge-core@4`. It does not report model
+accuracy. No provider was invoked, and no historical dataset, benchmark run, or archive was
+changed.
 
 ## Method
 
@@ -43,7 +44,7 @@ The missing pre-audit LRU fixture was portfolio-test drift, not an official-task
 adds an LRU incorrect candidate so the ordinary portfolio rejection checks now cover all twelve
 tasks.
 
-## Mutation results
+## Core@3 mutation results
 
 | Task ID | Generated | Valid | Killed | Survived | Equivalent | Invalid | Score |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -83,14 +84,33 @@ Four plausible mutants expose contract-covered gaps in the released cases:
 
 These cases are inferable from the public contracts, but `codejudge-core@3` is released and remains
 immutable. Its entries canonically select revision 1, whose specifications, references, and
-official cases are not patched in place. The version-aware registry can now retain revision 1 while
-a future dataset selects revision 2 for corrected tasks. No core@4 or revision-2 correction was
-created by this architectural change; the four findings above remain the released core@3 result.
+official cases were not patched in place.
 
-When those gaps are addressed, a future core@4 can reference revision 2 for `frame-decoder`,
-`retry-backoff`, and `ttl-cache` while leaving unaffected tasks on revision 1. The mutation audit
-resolves tasks through the selected dataset, so audits of core@3 continue exercising the exact
-revision-1 material rather than whichever revision is configured as current.
+Core@4 selects revision 2 for `frame-decoder`, `retry-backoff`, and `ttl-cache`, while all other
+tasks remain revision 1. The revision-2 suites strengthen existing authoritative cases without
+changing public wording, reference behavior, test-count semantics, timeouts, or scoring. Replaying
+the unchanged mutation catalog against core@4 kills all four former real survivors:
+
+| Task ID | Generated | Valid | Killed | Survived | Equivalent | Invalid | Score |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `frame-decoder@2` | 6 | 6 | 6 | 0 | 0 | 0 | 100% |
+| `retry-backoff@2` | 6 | 6 | 6 | 0 | 0 | 0 | 100% |
+| `ttl-cache@2` | 6 | 6 | 6 | 0 | 0 | 0 | 100% |
+| **core@4 portfolio** | **72** | **69** | **69** | **0** | **3** | **0** | **100%** |
+
+The three behaviorally equivalent mutants remain equivalent. There are no real survivors or
+infrastructure-invalid mutants in the core@4 audit.
+
+| Metric | core@3 | core@4 |
+| --- | ---: | ---: |
+| Tasks | 12 | 12 |
+| Revised tasks | 0 | 3 |
+| Known real mutation survivors | 4 | 0 |
+| Portfolio mutation score | 94.2% | 100% |
+| Historical compatibility | Released and immutable | New dataset identity |
+
+This is an improvement in authoritative test-suite discrimination, not evidence of improved model
+performance. Core@3 benchmark claims remain core@3 claims; no core@4 model run was manufactured.
 
 ## Portfolio balance and case density
 

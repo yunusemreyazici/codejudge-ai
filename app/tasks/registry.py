@@ -61,14 +61,14 @@ DEFAULT_TASK_REVISIONS: Mapping[str, int] = {
     "circuit-breaker": 1,
     "config-layer-merge": 1,
     "dependency-resolver": 1,
-    "frame-decoder": 1,
+    "frame-decoder": 2,
     "interval-reservation": 1,
     "logical-path": 1,
     "lru-cache": 1,
     "rate-limiter": 1,
-    "retry-backoff": 1,
+    "retry-backoff": 2,
     "structured-event-parser": 1,
-    "ttl-cache": 1,
+    "ttl-cache": 2,
 }
 
 

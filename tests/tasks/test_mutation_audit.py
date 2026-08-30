@@ -25,6 +25,14 @@ EXPECTED_DATASET_FINGERPRINTS = {
     "1": "866151a6d4d628805b37de98a67cdb02c646ecce16c2fc037e4c86d130234ebb",
     "2": "ee0f631d6810c039e84d90d9f2b77f20dcabbe27bef0af600695ab9cb1111988",
     "3": "1191d27db4643e9c18a0063ea9da1d2fb56fc363f0d2146740b53eee05e94522",
+    "4": "ed5b1a5c0263ca6d172c31c15de910795815247f238cfefc3975624ce4f296d0",
+}
+
+KNOWN_CORE_V3_SURVIVORS = {
+    "counts_utf8_bytes_instead_of_characters",
+    "rejects_equal_base_and_cap",
+    "expired_entries_consume_capacity_on_put",
+    "delete_does_not_purge_expired_entries",
 }
 
 
@@ -86,6 +94,37 @@ async def test_registered_mutation_has_a_deterministic_audit_outcome(
     assert outcome.classification == _expected_classification(mutation)
     assert outcome.total > 0
     assert outcome.diagnostic is None
+
+
+async def test_core_v4_kills_all_real_mutants_and_preserves_equivalent_classification() -> None:
+    tasks = TaskRegistry.default()
+    datasets = BenchmarkDatasetRegistry.default(tasks)
+    dataset = datasets.get("codejudge-core", "4")
+
+    outcomes = [
+        await execute_dataset_mutation(PythonRunner(), datasets, dataset, mutation)
+        for mutation in MUTATIONS
+    ]
+    summary = summarize_mutations(outcomes)
+    by_name = {outcome.name: outcome for outcome in outcomes}
+
+    assert summary.total_generated == 72
+    assert summary.valid_mutants == 69
+    assert summary.killed == 69
+    assert summary.survived == 0
+    assert summary.equivalent == 3
+    assert summary.invalid == 0
+    assert summary.mutation_score == 1
+    assert {name: by_name[name].classification for name in KNOWN_CORE_V3_SURVIVORS} == {
+        name: MutationClassification.KILLED for name in KNOWN_CORE_V3_SURVIVORS
+    }
+
+    for task_id in {"frame-decoder", "retry-backoff", "ttl-cache"}:
+        affected = [outcome for outcome in outcomes if outcome.task_id == task_id]
+        affected_summary = summarize_mutations(affected)
+        assert affected_summary.killed == affected_summary.valid_mutants == 6
+        assert affected_summary.survived == affected_summary.equivalent == 0
+        assert affected_summary.mutation_score == 1
 
 
 class _InfrastructureFailureRunner:

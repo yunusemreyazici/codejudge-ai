@@ -20,7 +20,14 @@ from tests.tasks.mutation_catalog import MUTATIONS_BY_TASK
 pytestmark = pytest.mark.sandbox
 TASKS = TaskRegistry.default()
 DATASETS = BenchmarkDatasetRegistry.default(TASKS)
-CORE_V3 = DATASETS.get("codejudge-core", "3")
+CORE_V4 = DATASETS.get("codejudge-core", "4")
+
+KNOWN_CORE_V3_SURVIVOR_NAMES = {
+    "counts_utf8_bytes_instead_of_characters",
+    "rejects_equal_base_and_cap",
+    "expired_entries_consume_capacity_on_put",
+    "delete_does_not_purge_expired_entries",
+}
 
 REPRESENTATIVE_MUTATIONS = tuple(
     next(
@@ -29,6 +36,12 @@ REPRESENTATIVE_MUTATIONS = tuple(
         if mutation.equivalent_reason is None and mutation.survivor_reason is None
     )
     for mutations in MUTATIONS_BY_TASK.values()
+)
+CORE_V4_DOCKER_MUTATIONS = REPRESENTATIVE_MUTATIONS + tuple(
+    mutation
+    for mutations in MUTATIONS_BY_TASK.values()
+    for mutation in mutations
+    if mutation.name in KNOWN_CORE_V3_SURVIVOR_NAMES
 )
 
 
@@ -47,14 +60,14 @@ async def mutation_runner() -> DockerPythonRunner:
 
 @pytest.mark.parametrize(
     "mutation",
-    REPRESENTATIVE_MUTATIONS,
-    ids=lambda mutation: mutation.task_id,
+    CORE_V4_DOCKER_MUTATIONS,
+    ids=lambda mutation: f"{mutation.task_id}-{mutation.name}",
 )
-async def test_representative_mutant_uses_private_safe_official_harness(
+async def test_core_v4_mutant_uses_exact_private_safe_official_harness(
     mutation_runner: DockerPythonRunner,
     mutation: MutationDefinition,
 ) -> None:
-    outcome = await execute_dataset_mutation(mutation_runner, DATASETS, CORE_V3, mutation)
+    outcome = await execute_dataset_mutation(mutation_runner, DATASETS, CORE_V4, mutation)
 
     assert outcome.classification == MutationClassification.KILLED
     assert outcome.total > 0

@@ -1,0 +1,9 @@
+{
+  "id": "retry-backoff",
+  "title": "Capped Exponential Retry Backoff",
+  "description": "Implement retry_delay(attempt: int, base_delay: float, max_delay: float, multiplier: float = 2.0) -> float. Attempts are one-based: attempt 1 returns base_delay. Later attempts multiply the previous uncapped delay by multiplier, and the returned value is capped at max_delay. The function must remain deterministic and handle very large attempt numbers without numeric overflow. Raise ValueError when attempt is not a positive non-boolean integer, base_delay is not positive, max_delay is less than base_delay, or multiplier is less than 1. No sleeping, randomness, or jitter is permitted.",
+  "language": "python",
+  "entrypoint": "solution:retry_delay",
+  "timeout_seconds": 5.0,
+  "version": "1.0"
+}

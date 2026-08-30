@@ -91,7 +91,10 @@ quote-style = "double"
 python_version = "3.13"
 strict = true
 files = ["app"]
-exclude = ["^app/tasks/definitions/.*/tests/"]
+exclude = [
+    "^app/tasks/definitions/.*/tests/",
+    "^app/tasks/definitions/.*/revisions/[0-9]+/reference/",
+]
 pretty = true
 show_error_codes = true
 warn_unreachable = true

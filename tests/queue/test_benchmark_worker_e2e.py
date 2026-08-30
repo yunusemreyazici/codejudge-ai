@@ -394,6 +394,7 @@ async def test_multitask_fake_models_real_services_and_static_analysis_e2e(
         entries.append(
             DatasetTaskEntry(
                 task_id=task_id,
+                task_revision=task.revision,
                 task_version=task.specification.version,
                 task_fingerprint=task_fingerprint(task, tests_hash),
                 tests_fingerprint=tests_hash,

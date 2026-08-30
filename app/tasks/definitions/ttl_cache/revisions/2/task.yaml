@@ -1,0 +1,9 @@
+{
+  "id": "ttl-cache",
+  "title": "TTL-Aware LRU Cache",
+  "description": "Implement class TTLCache. TTLCache(capacity: int) requires a positive integer capacity. put(key: str, value: object, ttl: float, now: float) stores a value until now + ttl, requires ttl > 0, overwrites existing keys, and marks the key most recently used. get(key: str, now: float) returns the live value or None and refreshes recency only on a hit. delete(key: str, now: float) returns whether a live key was removed. size(now: float) returns the live entry count. Before each operation, entries with expires_at <= now are removed. Capacity counts only live entries; inserting beyond capacity evicts the least recently used live key. Calls use nondecreasing logical timestamps.",
+  "language": "python",
+  "entrypoint": "solution:TTLCache",
+  "timeout_seconds": 5.0,
+  "version": "1.0"
+}
