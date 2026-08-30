@@ -25,7 +25,8 @@ The runtime/project version is synchronized in exactly three places:
 3. the root package metadata in `uv.lock`.
 
 Ordinary fixtures should call the authoritative runtime version helper instead of hard-coding the
-current release. An explicit mismatch test should use a deliberately fake historical value.
+expected runtime identity. An explicit mismatch test should use a deliberately fake historical
+value.
 
 Verify installed runtime metadata after a bump:
 

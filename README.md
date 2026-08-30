@@ -12,8 +12,9 @@ inside restricted Docker containers, performs deterministic static analysis, sto
 PostgreSQL snapshots, and compares coding models over versioned task portfolios. Optional AI review
 is recorded beside the deterministic result and never changes its score or rank.
 
-The current release is **v0.7.13**. The core evaluator, Docker sandbox, analyzers, durable workers,
-AI-assisted review, and multi-model benchmark workflow are implemented and covered by CI.
+The core evaluator, Docker sandbox, analyzers, durable workers, AI-assisted review, and multi-model
+benchmark workflow are implemented and covered by CI. The release badge above tracks the latest
+published GitHub tag.
 
 > [!CAUTION]
 > Docker strengthens isolation but is not a perfect security boundary. The Docker daemon, runtime,
