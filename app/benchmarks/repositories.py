@@ -444,15 +444,12 @@ class SqlAlchemyBenchmarkRepository:
                     record = await session.get(
                         BenchmarkSampleRecord, sample_id, with_for_update=True
                     )
-                    if record is None:
+                    if record is None or not _owns_active_benchmark_lease(record, worker_id, now):
                         return False
                     existing = await session.get(BenchmarkGenerationArtifactRecord, sample_id)
                     if existing is not None:
                         return existing.source_hash == artifact.source_hash
-                    if (
-                        BenchmarkSampleStatus(record.status) is not BenchmarkSampleStatus.GENERATING
-                        or record.worker_id != worker_id
-                    ):
+                    if BenchmarkSampleStatus(record.status) is not BenchmarkSampleStatus.GENERATING:
                         return False
                     session.add(_artifact_record(artifact))
                     record.status = BenchmarkSampleStatus.EVALUATING
@@ -479,7 +476,7 @@ class SqlAlchemyBenchmarkRepository:
                         return False
                     if BenchmarkSampleStatus(record.status) is BenchmarkSampleStatus.COMPLETED:
                         return True
-                    if record.worker_id != worker_id:
+                    if not _owns_active_benchmark_lease(record, worker_id, now):
                         return False
                     existing = await session.get(EvaluationRecord, snapshot.evaluation_id)
                     if existing is None:
@@ -516,7 +513,7 @@ class SqlAlchemyBenchmarkRepository:
                     record = await session.get(
                         BenchmarkSampleRecord, sample_id, with_for_update=True
                     )
-                    if record is None or record.worker_id != worker_id:
+                    if record is None or not _owns_active_benchmark_lease(record, worker_id, now):
                         return None
                     record.failure_code = code
                     record.worker_id = None
@@ -822,6 +819,18 @@ def _config_from_record(record: BenchmarkModelConfigRecord) -> BenchmarkModelCon
 
 def _sample_record(sample: BenchmarkSample) -> BenchmarkSampleRecord:
     return BenchmarkSampleRecord(**sample.model_dump())
+
+
+def _owns_active_benchmark_lease(
+    record: BenchmarkSampleRecord, worker_id: str, now: datetime
+) -> bool:
+    return (
+        record.worker_id == worker_id
+        and record.lease_expires_at is not None
+        and record.lease_expires_at > now
+        and BenchmarkSampleStatus(record.status)
+        in {BenchmarkSampleStatus.GENERATING, BenchmarkSampleStatus.EVALUATING}
+    )
 
 
 def _sample_from_record(record: BenchmarkSampleRecord) -> BenchmarkSample:

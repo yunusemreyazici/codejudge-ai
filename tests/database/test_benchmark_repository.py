@@ -324,6 +324,52 @@ async def test_lease_renewal_must_happen_before_expiry_and_extends_ownership(
     assert await repository.recover_stale(NOW + timedelta(seconds=20), 0.01) == 1
 
 
+async def test_expired_owner_cannot_persist_artifact_failure_or_completion(
+    database_harness: DatabaseHarness,
+) -> None:
+    repository = database_harness.benchmark_repository
+    run, config, sample = _plan(idempotency_key=None)
+    await repository.create_plan(run, [config], [sample])
+    assert await repository.claim(sample.benchmark_sample_id, "stale-worker", NOW, 1)
+    expired_at = NOW + timedelta(seconds=2)
+    source_hash, source_size = source_identity(SOURCE)
+    artifact = GeneratedSolutionArtifact(
+        benchmark_sample_id=sample.benchmark_sample_id,
+        source=SOURCE,
+        source_hash=source_hash,
+        source_size=source_size,
+        generation_latency_ms=7,
+        created_at=expired_at,
+    )
+    snapshot = snapshot_fixture(source=SOURCE, evaluation_id=sample.evaluation_id)
+
+    assert not await repository.store_artifact(
+        sample.benchmark_sample_id, "stale-worker", artifact, expired_at
+    )
+    assert (
+        await repository.record_failure(
+            sample.benchmark_sample_id,
+            "stale-worker",
+            "provider_unavailable",
+            generation=True,
+            retryable=True,
+            now=expired_at,
+            retry_base_delay_seconds=0.01,
+        )
+        is None
+    )
+    assert not await repository.complete(
+        sample.benchmark_sample_id,
+        "stale-worker",
+        snapshot,
+        expired_at,
+        2,
+    )
+    assert await repository.get_artifact(sample.benchmark_sample_id) is None
+    assert await database_harness.repository.get(sample.evaluation_id) is None
+    assert await repository.recover_stale(expired_at, 0.01) == 1
+
+
 async def test_reclaimed_sample_rejects_old_owner_renewal_and_completion(
     database_harness: DatabaseHarness,
 ) -> None:

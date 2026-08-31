@@ -7,7 +7,7 @@ import json
 import logging
 import time
 from collections.abc import Callable, Mapping
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from pydantic import ValidationError
 
@@ -105,7 +105,24 @@ class BenchmarkWorker:
 
     async def _run_with_lease(self, claimed: BenchmarkSample) -> bool:
         stop_heartbeat = asyncio.Event()
-        heartbeat = asyncio.create_task(self._renew_lease(claimed, stop_heartbeat))
+        initial_deadline = self._initial_renewal_deadline(claimed)
+        confirmed = await self._renew_before_deadline(
+            claimed,
+            stop_heartbeat,
+            initial_deadline,
+            renewal_count=0,
+        )
+        if confirmed is None:
+            return False
+        renewal_deadline, renewal_count = confirmed
+        heartbeat = asyncio.create_task(
+            self._renew_lease(
+                claimed,
+                stop_heartbeat,
+                renewal_deadline=renewal_deadline,
+                renewal_count=renewal_count,
+            )
+        )
         processing = asyncio.create_task(self._process_claimed(claimed))
         try:
             done, _ = await asyncio.wait(
@@ -278,48 +295,109 @@ class BenchmarkWorker:
             created_at=self._clock(),
         )
 
-    async def _renew_lease(self, sample: BenchmarkSample, stop: asyncio.Event) -> None:
+    def _initial_renewal_deadline(self, sample: BenchmarkSample) -> float:
+        if sample.lease_expires_at is None:
+            return time.monotonic() + self._lease_seconds
+        remaining = max(0.0, (sample.lease_expires_at - self._clock()).total_seconds())
+        return time.monotonic() + remaining
+
+    async def _renew_lease(
+        self,
+        sample: BenchmarkSample,
+        stop: asyncio.Event,
+        *,
+        renewal_deadline: float,
+        renewal_count: int,
+    ) -> None:
         interval = self._lease_seconds / 3
-        renewal_count = 0
-        renewal_deadline = time.monotonic() + self._lease_seconds
         while not stop.is_set():
+            remaining = renewal_deadline - time.monotonic()
+            if remaining <= 0:
+                self._log_lease_loss(sample, renewal_count, "renewal_deadline_exceeded")
+                return
+            delay = min(interval, remaining / 2)
+            if await self._wait_for_stop(stop, delay):
+                return
+            confirmed = await self._renew_before_deadline(
+                sample,
+                stop,
+                renewal_deadline,
+                renewal_count,
+            )
+            if confirmed is None:
+                return
+            renewal_deadline, renewal_count = confirmed
+
+    async def _renew_before_deadline(
+        self,
+        sample: BenchmarkSample,
+        stop: asyncio.Event,
+        renewal_deadline: float,
+        renewal_count: int,
+    ) -> tuple[float, int] | None:
+        retry_interval = self._lease_seconds / 12
+        while not stop.is_set():
+            remaining = renewal_deadline - time.monotonic()
+            if remaining <= 0:
+                self._log_lease_loss(sample, renewal_count, "renewal_unconfirmed_before_expiry")
+                return None
+            renewal_started_at = self._clock()
             try:
-                await asyncio.wait_for(stop.wait(), timeout=interval)
-            except TimeoutError:
-                remaining = renewal_deadline - time.monotonic()
-                if remaining <= 0:
-                    self._log_lease_loss(sample, renewal_count, "renewal_deadline_exceeded")
-                    return
-                try:
-                    async with asyncio.timeout(remaining):
-                        renewed = await self._repository.renew_lease(
-                            sample.benchmark_sample_id,
-                            self.worker_id,
-                            self._clock(),
-                            self._lease_seconds,
-                        )
-                except (PersistenceError, TimeoutError) as error:
-                    logger.warning(
-                        "benchmark lease renewal deferred run_id=%s sample_id=%s "
-                        "worker_id=%s attempt=%d renewal_count=%d error_type=%s",
-                        sample.benchmark_run_id,
+                async with asyncio.timeout(remaining):
+                    renewed = await self._repository.renew_lease(
                         sample.benchmark_sample_id,
                         self.worker_id,
-                        sample.attempt_count,
-                        renewal_count,
-                        type(error).__name__,
+                        renewal_started_at,
+                        self._lease_seconds,
                     )
-                    if time.monotonic() >= renewal_deadline:
-                        self._log_lease_loss(
-                            sample, renewal_count, "renewal_unconfirmed_before_expiry"
-                        )
-                        return
-                    continue
-                if not renewed:
-                    self._log_lease_loss(sample, renewal_count, "repository_rejected_renewal")
-                    return
-                renewal_count += 1
-                renewal_deadline = time.monotonic() + self._lease_seconds
+            except (PersistenceError, TimeoutError) as error:
+                logger.warning(
+                    "benchmark lease renewal deferred run_id=%s sample_id=%s "
+                    "worker_id=%s attempt=%d renewal_count=%d error_type=%s",
+                    sample.benchmark_run_id,
+                    sample.benchmark_sample_id,
+                    self.worker_id,
+                    sample.attempt_count,
+                    renewal_count,
+                    type(error).__name__,
+                )
+                remaining = renewal_deadline - time.monotonic()
+                if remaining <= 0:
+                    self._log_lease_loss(sample, renewal_count, "renewal_unconfirmed_before_expiry")
+                    return None
+                if await self._wait_for_stop(stop, min(retry_interval, remaining)):
+                    return None
+                continue
+            if not renewed:
+                self._log_lease_loss(sample, renewal_count, "repository_rejected_renewal")
+                return None
+            renewal_count += 1
+            persisted_expiry = renewal_started_at + timedelta(seconds=self._lease_seconds)
+            persisted_remaining = (persisted_expiry - self._clock()).total_seconds()
+            if persisted_remaining <= 0:
+                self._log_lease_loss(sample, renewal_count, "renewal_response_arrived_after_expiry")
+                return None
+            renewal_deadline = time.monotonic() + persisted_remaining
+            logger.debug(
+                "benchmark lease renewed run_id=%s sample_id=%s worker_id=%s "
+                "attempt=%d renewal_count=%d lease_expires_at=%s",
+                sample.benchmark_run_id,
+                sample.benchmark_sample_id,
+                self.worker_id,
+                sample.attempt_count,
+                renewal_count,
+                persisted_expiry,
+            )
+            return renewal_deadline, renewal_count
+        return None
+
+    @staticmethod
+    async def _wait_for_stop(stop: asyncio.Event, delay: float) -> bool:
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=delay)
+        except TimeoutError:
+            return False
+        return True
 
     def _log_lease_loss(self, sample: BenchmarkSample, renewal_count: int, reason: str) -> None:
         logger.warning(

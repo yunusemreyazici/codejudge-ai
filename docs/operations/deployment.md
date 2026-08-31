@@ -43,7 +43,7 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `EVALUATION_MODE` | `sync` | Synchronous compatibility or durable `async` mode |
 | `REDIS_URL` | unset | Required `redis://` or `rediss://` URL for async mode |
 | `WORKER_CONCURRENCY` | `1` | Consumer slots per worker process |
-| `WORKER_LEASE_SECONDS` | `60` | Renewable PostgreSQL ownership lease |
+| `WORKER_LEASE_SECONDS` | `60` | Renewable PostgreSQL dead-worker detection window; not a sample runtime limit |
 | `WORKER_MAX_ATTEMPTS` | `3` | Maximum infrastructure attempts |
 | `OUTBOX_POLL_INTERVAL_SECONDS` | `1` | Publisher and maintenance interval |
 | `RETRY_BASE_DELAY_SECONDS` | `5` | Retry backoff base |

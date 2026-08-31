@@ -53,6 +53,36 @@ class ControlledLeaseRepository:
             )
 
 
+class ExpiringLeaseRepository(ControlledLeaseRepository):
+    def __init__(self, lease_seconds: float, *, first_delay: float = 0) -> None:
+        super().__init__()
+        self.lease_seconds = lease_seconds
+        self.first_delay = first_delay
+        self.expires_at = time.monotonic() + lease_seconds
+        self.expiry_history: list[float] = []
+        self.expired = False
+
+    async def renew_lease(self, *args: object) -> bool:
+        invocation = time.monotonic()
+        if not self.renewal_times and self.first_delay:
+            await asyncio.sleep(self.first_delay)
+        async with self._changed:
+            self.renewal_times.append(time.monotonic())
+            self._changed.notify_all()
+        if invocation >= self.expires_at:
+            return False
+        self.expires_at = invocation + self.lease_seconds
+        self.expiry_history.append(self.expires_at)
+        return True
+
+    async def watch_for_expiry(self, stop: asyncio.Event) -> None:
+        while not stop.is_set():
+            if time.monotonic() >= self.expires_at:
+                self.expired = True
+                return
+            await asyncio.sleep(self.lease_seconds / 30)
+
+
 class OperationalRepository(ControlledLeaseRepository):
     def __init__(self, run: BenchmarkRun, config: BenchmarkModelConfig) -> None:
         super().__init__()
@@ -329,6 +359,70 @@ async def test_transient_renewal_failure_recovers_before_ownership_is_lost() -> 
     assert await processing is True
 
 
+async def test_unconfirmed_renewal_retries_are_bounded_by_original_expiry() -> None:
+    lease_seconds = 0.12
+    repository = ControlledLeaseRepository([PersistenceError("unavailable") for _ in range(100)])
+    worker = _worker(repository, lease_seconds=lease_seconds)
+    operation_started = False
+
+    async def operation(sample: BenchmarkSample) -> bool:
+        del sample
+        nonlocal operation_started
+        operation_started = True
+        return True
+
+    worker._process_claimed = operation  # type: ignore[method-assign]
+    started = time.monotonic()
+
+    assert await worker._run_with_lease(_sample()) is False
+    assert time.monotonic() - started < lease_seconds * 2
+    assert operation_started is False
+    assert 2 <= len(repository.renewal_times) <= 14
+
+
+async def test_long_healthy_processing_never_crosses_the_durable_lease_expiry() -> None:
+    lease_seconds = 0.18
+    repository = ExpiringLeaseRepository(lease_seconds)
+    worker = _worker(repository, lease_seconds=lease_seconds)
+    stop_watcher = asyncio.Event()
+
+    async def operation(sample: BenchmarkSample) -> bool:
+        del sample
+        await asyncio.sleep(lease_seconds * 3)
+        return True
+
+    worker._process_claimed = operation  # type: ignore[method-assign]
+    watcher = asyncio.create_task(repository.watch_for_expiry(stop_watcher))
+    try:
+        assert await worker._run_with_lease(_sample()) is True
+    finally:
+        stop_watcher.set()
+        await watcher
+
+    assert repository.expired is False
+    assert len(repository.renewal_times) >= 4
+
+
+async def test_slow_initial_renewal_uses_persisted_expiry_not_response_time() -> None:
+    lease_seconds = 0.3
+    repository = ExpiringLeaseRepository(lease_seconds, first_delay=0.24)
+    worker = _worker(repository, lease_seconds=lease_seconds)
+    release = asyncio.Event()
+
+    async def operation(sample: BenchmarkSample) -> bool:
+        del sample
+        await release.wait()
+        return True
+
+    worker._process_claimed = operation  # type: ignore[method-assign]
+    processing = asyncio.create_task(worker._run_with_lease(_sample()))
+    await repository.wait_for_renewals(2)
+
+    assert repository.renewal_times[1] < repository.expiry_history[0]
+    release.set()
+    assert await processing is True
+
+
 async def test_ownership_loss_cancels_active_operation_and_cannot_report_success() -> None:
     repository = ControlledLeaseRepository([True, False])
     worker = _worker(repository)
@@ -373,18 +467,40 @@ async def test_worker_cancellation_stops_renewal_cleanly() -> None:
     assert len(repository.renewal_times) == completed_renewals
 
 
-async def test_timed_out_operation_stops_renewal_after_failure_transition() -> None:
+async def test_processing_error_stops_renewal_without_leaking_tasks() -> None:
     repository = ControlledLeaseRepository()
     worker = _worker(repository)
 
-    async def timed_out_operation(sample: BenchmarkSample) -> bool:
+    async def operation(sample: BenchmarkSample) -> bool:
         del sample
         await repository.wait_for_renewals(1)
+        raise RuntimeError("controlled failure")
+
+    worker._process_claimed = operation  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="controlled failure"):
+        await worker._run_with_lease(_sample())
+
+    completed_renewals = len(repository.renewal_times)
+    await asyncio.sleep(0.12)
+    assert len(repository.renewal_times) == completed_renewals
+
+
+@pytest.mark.parametrize("terminal_state", ["completed", "generation_failed", "skipped"])
+async def test_terminal_transition_stops_renewal(terminal_state: str) -> None:
+    repository = ControlledLeaseRepository()
+    worker = _worker(repository)
+    transitions: list[str] = []
+
+    async def terminal_operation(sample: BenchmarkSample) -> bool:
+        del sample
+        await repository.wait_for_renewals(1)
+        transitions.append(terminal_state)
         return True
 
-    worker._process_claimed = timed_out_operation  # type: ignore[method-assign]
+    worker._process_claimed = terminal_operation  # type: ignore[method-assign]
 
     assert await worker._run_with_lease(_sample()) is True
+    assert transitions == [terminal_state]
     completed_renewals = len(repository.renewal_times)
     await asyncio.sleep(0.12)
     assert len(repository.renewal_times) == completed_renewals

@@ -21,10 +21,17 @@ Consumer groups retain unacknowledged messages. Stale pending delivery can be cl
 worker. Delivery is at least once; correctness comes from idempotent durable transitions, not an
 exactly-once transport claim.
 
+Redis pending-message idle time controls delivery only; it does not transfer benchmark ownership.
+PostgreSQL `worker_id`, sample state, and `lease_expires_at` are authoritative. A Redis redelivery
+cannot take active work, while PostgreSQL recovery requeues genuinely expired work through the
+transactional outbox.
+
 ## Claims and leases
 
 Workers atomically claim queued work and persist an owner plus expiry. Active work renews its lease
-on an interval bounded relative to the lease duration. Safety invariants include:
+immediately before processing and then approximately every one-third of the lease duration. A
+transient renewal failure uses shorter bounded retries while time remains; the worker fails closed
+if ownership cannot be confirmed before the persisted expiry. Safety invariants include:
 
 - renewal cannot succeed at or after persisted expiry;
 - ownership loss cancels active work;
@@ -36,7 +43,9 @@ on an interval bounded relative to the lease duration. Safety invariants include
 
 The default worker lease is 60 seconds and maximum infrastructure attempts are three. Successive
 retry delays follow the current deterministic 5, 15, and 45 second schedule; with three total
-attempts, only the first two failures schedule another attempt.
+attempts, only the first two failures schedule another attempt. `WORKER_LEASE_SECONDS` is a
+dead-worker detection window, not a maximum sample runtime: healthy provider retries, parsing,
+evaluation, and terminal persistence may run longer while heartbeat renewals continue.
 
 ## Candidate outcomes versus infrastructure failure
 
