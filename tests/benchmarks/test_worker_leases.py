@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import cast
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -20,6 +21,7 @@ from app.benchmarks.models import (
     GeneratedSolutionArtifact,
     GenerationOutputMode,
 )
+from app.benchmarks.repositories import BenchmarkLeaseRenewal
 from app.benchmarks.worker import BenchmarkWorker
 from app.db.repositories import PersistenceError
 from app.evaluator.models import EvaluationRequest
@@ -34,17 +36,25 @@ class ControlledLeaseRepository:
     def __init__(self, outcomes: list[bool | PersistenceError] | None = None) -> None:
         self.outcomes = deque(outcomes or [])
         self.renewal_times: list[float] = []
+        self.renewal_instants: list[datetime] = []
         self._changed = asyncio.Condition()
 
-    async def renew_lease(self, *args: object) -> bool:
-        del args
+    async def renew_lease(self, *args: object) -> BenchmarkLeaseRenewal | None:
         async with self._changed:
             self.renewal_times.append(time.monotonic())
             self._changed.notify_all()
         outcome = self.outcomes.popleft() if self.outcomes else True
         if isinstance(outcome, PersistenceError):
             raise outcome
-        return outcome
+        if not outcome:
+            return None
+        renewed_at = cast(datetime, args[2])
+        self.renewal_instants.append(renewed_at)
+        lease_seconds = cast(float, args[3])
+        return BenchmarkLeaseRenewal(
+            renewed_at=renewed_at,
+            lease_expires_at=renewed_at + timedelta(seconds=lease_seconds),
+        )
 
     async def wait_for_renewals(self, count: int) -> None:
         async with self._changed:
@@ -58,29 +68,57 @@ class ExpiringLeaseRepository(ControlledLeaseRepository):
         super().__init__()
         self.lease_seconds = lease_seconds
         self.first_delay = first_delay
-        self.expires_at = time.monotonic() + lease_seconds
-        self.expiry_history: list[float] = []
+        self.expires_at = datetime.now(UTC) + timedelta(seconds=lease_seconds)
+        self.expiry_history: list[datetime] = []
         self.expired = False
 
-    async def renew_lease(self, *args: object) -> bool:
-        invocation = time.monotonic()
+    async def renew_lease(self, *args: object) -> BenchmarkLeaseRenewal | None:
+        invocation = cast(datetime, args[2])
         if not self.renewal_times and self.first_delay:
             await asyncio.sleep(self.first_delay)
         async with self._changed:
             self.renewal_times.append(time.monotonic())
+            self.renewal_instants.append(invocation)
             self._changed.notify_all()
         if invocation >= self.expires_at:
-            return False
-        self.expires_at = invocation + self.lease_seconds
+            return None
+        self.expires_at = invocation + timedelta(seconds=self.lease_seconds)
         self.expiry_history.append(self.expires_at)
-        return True
+        return BenchmarkLeaseRenewal(
+            renewed_at=invocation,
+            lease_expires_at=self.expires_at,
+        )
 
     async def watch_for_expiry(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
-            if time.monotonic() >= self.expires_at:
+            if datetime.now(UTC) >= self.expires_at:
                 self.expired = True
                 return
             await asyncio.sleep(self.lease_seconds / 30)
+
+
+class MutableClock:
+    def __init__(self, current: datetime) -> None:
+        self.current = current
+
+    def __call__(self) -> datetime:
+        return self.current
+
+    def advance(self, seconds: float) -> None:
+        self.current += timedelta(seconds=seconds)
+
+
+class ShortPersistedLeaseRepository(ControlledLeaseRepository):
+    async def renew_lease(self, *args: object) -> BenchmarkLeaseRenewal:
+        renewed_at = cast(datetime, args[2])
+        async with self._changed:
+            self.renewal_times.append(time.monotonic())
+            self.renewal_instants.append(renewed_at)
+            self._changed.notify_all()
+        return BenchmarkLeaseRenewal(
+            renewed_at=renewed_at,
+            lease_expires_at=renewed_at + timedelta(seconds=0.05),
+        )
 
 
 class OperationalRepository(ControlledLeaseRepository):
@@ -206,6 +244,7 @@ def _sample_and_config(
         attempt_count=1,
         max_attempts=3,
         worker_id="lease-test",
+        lease_expires_at=now + timedelta(seconds=60),
         created_at=now,
         updated_at=now,
     )
@@ -242,12 +281,18 @@ def _sample_and_config(
     return sample, config, run
 
 
-def _sample() -> BenchmarkSample:
-    return _sample_and_config()[0]
+def _sample(*, lease_seconds: float = 0.3) -> BenchmarkSample:
+    sample = _sample_and_config()[0]
+    return sample.model_copy(
+        update={"lease_expires_at": sample.updated_at + timedelta(seconds=lease_seconds)}
+    )
 
 
 def _worker(
-    repository: ControlledLeaseRepository, *, lease_seconds: float = 0.3
+    repository: ControlledLeaseRepository,
+    *,
+    lease_seconds: float = 0.3,
+    clock: MutableClock | None = None,
 ) -> BenchmarkWorker:
     return BenchmarkWorker(
         worker_id="lease-test",
@@ -260,6 +305,7 @@ def _worker(
         max_code_size=100_000,
         lease_seconds=lease_seconds,
         retry_base_delay_seconds=0.01,
+        clock=clock or (lambda: datetime.now(UTC)),
     )
 
 
@@ -374,7 +420,7 @@ async def test_unconfirmed_renewal_retries_are_bounded_by_original_expiry() -> N
     worker._process_claimed = operation  # type: ignore[method-assign]
     started = time.monotonic()
 
-    assert await worker._run_with_lease(_sample()) is False
+    assert await worker._run_with_lease(_sample(lease_seconds=lease_seconds)) is False
     assert time.monotonic() - started < lease_seconds * 2
     assert operation_started is False
     assert 2 <= len(repository.renewal_times) <= 14
@@ -394,7 +440,7 @@ async def test_long_healthy_processing_never_crosses_the_durable_lease_expiry() 
     worker._process_claimed = operation  # type: ignore[method-assign]
     watcher = asyncio.create_task(repository.watch_for_expiry(stop_watcher))
     try:
-        assert await worker._run_with_lease(_sample()) is True
+        assert await worker._run_with_lease(_sample(lease_seconds=lease_seconds)) is True
     finally:
         stop_watcher.set()
         await watcher
@@ -418,9 +464,99 @@ async def test_slow_initial_renewal_uses_persisted_expiry_not_response_time() ->
     processing = asyncio.create_task(worker._run_with_lease(_sample()))
     await repository.wait_for_renewals(2)
 
-    assert repository.renewal_times[1] < repository.expiry_history[0]
+    assert repository.renewal_instants[1] < repository.expiry_history[0]
     release.set()
     assert await processing is True
+
+
+async def test_worker_uses_exact_persisted_expiry_returned_by_repository() -> None:
+    now = datetime.now(UTC)
+    clock = MutableClock(now)
+    repository = ShortPersistedLeaseRepository()
+    worker = _worker(repository, lease_seconds=0.3, clock=clock)
+    sample = _sample().model_copy(update={"lease_expires_at": now + timedelta(seconds=0.3)})
+
+    state = await worker._renew_before_expiry(
+        sample,
+        asyncio.Event(),
+        cast(datetime, sample.lease_expires_at),
+        renewal_count=0,
+        previous_success_monotonic=None,
+        scheduled_for_monotonic=time.monotonic(),
+    )
+
+    assert state is not None
+    assert state.lease_expires_at == now + timedelta(seconds=0.05)
+    assert state.lease_expires_at != now + timedelta(seconds=worker._lease_seconds)
+
+
+async def test_utc_clock_advance_cannot_leave_worker_believing_lease_is_live(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    now = datetime.now(UTC)
+    clock = MutableClock(now)
+    repository = ControlledLeaseRepository()
+    worker = _worker(repository, lease_seconds=0.3, clock=clock)
+    sample = _sample().model_copy(update={"lease_expires_at": now + timedelta(seconds=0.3)})
+    stop = asyncio.Event()
+    state = await worker._renew_before_expiry(
+        sample,
+        stop,
+        cast(datetime, sample.lease_expires_at),
+        renewal_count=0,
+        previous_success_monotonic=None,
+        scheduled_for_monotonic=time.monotonic(),
+    )
+    assert state is not None
+    assert len(repository.renewal_times) == 1
+
+    clock.advance(0.31)
+    with caplog.at_level("WARNING", logger="app.benchmarks.worker"):
+        lost = await worker._renew_before_expiry(
+            sample,
+            stop,
+            state.lease_expires_at,
+            renewal_count=state.renewal_count,
+            previous_success_monotonic=state.last_success_monotonic,
+            scheduled_for_monotonic=time.monotonic(),
+        )
+
+    assert lost is None
+    assert len(repository.renewal_times) == 1
+    assert "reason=renewal_unconfirmed_before_expiry" in caplog.text
+    assert "lease_expires_at=" in caplog.text
+    assert "remaining_margin_seconds=" in caplog.text
+    assert "scheduling_lateness_seconds=" in caplog.text
+
+
+async def test_utc_clock_advance_cancels_active_processing_after_prior_renewals() -> None:
+    lease_seconds = 0.3
+    now = datetime.now(UTC)
+    clock = MutableClock(now)
+    repository = ControlledLeaseRepository()
+    worker = _worker(repository, lease_seconds=lease_seconds, clock=clock)
+    sample = _sample().model_copy(
+        update={"lease_expires_at": now + timedelta(seconds=lease_seconds)}
+    )
+    cancelled = asyncio.Event()
+
+    async def operation(claimed: BenchmarkSample) -> bool:
+        del claimed
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    worker._process_claimed = operation  # type: ignore[method-assign]
+    processing = asyncio.create_task(worker._run_with_lease(sample))
+    await repository.wait_for_renewals(3)
+    confirmed_renewals = len(repository.renewal_times)
+
+    clock.advance(lease_seconds + 0.01)
+
+    assert await asyncio.wait_for(processing, timeout=lease_seconds) is False
+    assert cancelled.is_set()
+    assert len(repository.renewal_times) == confirmed_renewals
 
 
 async def test_ownership_loss_cancels_active_operation_and_cannot_report_success() -> None:

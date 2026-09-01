@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 
 from app.benchmarks.models import (
@@ -14,6 +14,7 @@ from app.benchmarks.models import (
     BenchmarkSampleStatus,
     GeneratedSolutionArtifact,
 )
+from app.db.models import BenchmarkSampleRecord
 from app.jobs.repositories import IdempotencyConflictError
 from app.snapshots.fingerprints import source_identity
 from tests.database.conftest import DatabaseHarness
@@ -314,14 +315,54 @@ async def test_lease_renewal_must_happen_before_expiry_and_extends_ownership(
     await repository.create_plan(run, [config], [sample])
     assert await repository.claim(sample.benchmark_sample_id, "worker", NOW, 10)
 
-    assert await repository.renew_lease(
+    renewal = await repository.renew_lease(
         sample.benchmark_sample_id, "worker", NOW + timedelta(seconds=9), 10
     )
+    assert renewal is not None
+    assert renewal.renewed_at == NOW + timedelta(seconds=9)
+    assert renewal.lease_expires_at == NOW + timedelta(seconds=19)
     assert await repository.recover_stale(NOW + timedelta(seconds=18), 0.01) == 0
-    assert not await repository.renew_lease(
-        sample.benchmark_sample_id, "worker", NOW + timedelta(seconds=20), 10
+    assert (
+        await repository.renew_lease(
+            sample.benchmark_sample_id, "worker", NOW + timedelta(seconds=20), 10
+        )
+        is None
     )
     assert await repository.recover_stale(NOW + timedelta(seconds=20), 0.01) == 1
+
+
+async def test_lease_renewal_returns_persisted_expiry_after_row_lock_contention(
+    database_harness: DatabaseHarness,
+) -> None:
+    repository = database_harness.benchmark_repository
+    run, config, sample = _plan(idempotency_key=None)
+    await repository.create_plan(run, [config], [sample])
+    assert await repository.claim(sample.benchmark_sample_id, "worker", NOW, 30)
+    renewed_at = NOW + timedelta(seconds=5)
+
+    async with database_harness.database.session_factory() as locking_session:
+        async with locking_session.begin():
+            locked = await locking_session.scalar(
+                select(BenchmarkSampleRecord)
+                .where(BenchmarkSampleRecord.benchmark_sample_id == sample.benchmark_sample_id)
+                .with_for_update()
+            )
+            assert locked is not None
+            pending = asyncio.create_task(
+                repository.renew_lease(
+                    sample.benchmark_sample_id,
+                    "worker",
+                    renewed_at,
+                    30,
+                )
+            )
+            await asyncio.sleep(0.05)
+            assert not pending.done()
+
+    renewal = await asyncio.wait_for(pending, timeout=1)
+    assert renewal is not None
+    assert renewal.renewed_at == renewed_at
+    assert renewal.lease_expires_at == renewed_at + timedelta(seconds=30)
 
 
 async def test_expired_owner_cannot_persist_artifact_failure_or_completion(
@@ -393,8 +434,11 @@ async def test_reclaimed_sample_rejects_old_owner_renewal_and_completion(
     )
 
     snapshot = snapshot_fixture(source=SOURCE, evaluation_id=sample.evaluation_id)
-    assert not await repository.renew_lease(
-        sample.benchmark_sample_id, "old-worker", NOW + timedelta(seconds=4), 10
+    assert (
+        await repository.renew_lease(
+            sample.benchmark_sample_id, "old-worker", NOW + timedelta(seconds=4), 10
+        )
+        is None
     )
     assert not await repository.complete(
         sample.benchmark_sample_id,

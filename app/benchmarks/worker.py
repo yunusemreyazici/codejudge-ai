@@ -7,7 +7,8 @@ import json
 import logging
 import time
 from collections.abc import Callable, Mapping
-from datetime import datetime, timedelta
+from dataclasses import dataclass
+from datetime import datetime
 
 from pydantic import ValidationError
 
@@ -36,6 +37,13 @@ from app.snapshots.fingerprints import source_identity, task_fingerprint, tests_
 from app.tasks.registry import TaskRegistry
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class _LeaseHeartbeatState:
+    lease_expires_at: datetime
+    renewal_count: int
+    last_success_monotonic: float
 
 
 class BenchmarkWorker:
@@ -105,22 +113,29 @@ class BenchmarkWorker:
 
     async def _run_with_lease(self, claimed: BenchmarkSample) -> bool:
         stop_heartbeat = asyncio.Event()
-        initial_deadline = self._initial_renewal_deadline(claimed)
-        confirmed = await self._renew_before_deadline(
+        if claimed.lease_expires_at is None:
+            self._log_lease_loss(
+                claimed,
+                renewal_count=0,
+                reason="missing_persisted_expiry",
+                lease_expires_at=None,
+            )
+            return False
+        confirmed = await self._renew_before_expiry(
             claimed,
             stop_heartbeat,
-            initial_deadline,
+            claimed.lease_expires_at,
             renewal_count=0,
+            previous_success_monotonic=None,
+            scheduled_for_monotonic=time.monotonic(),
         )
         if confirmed is None:
             return False
-        renewal_deadline, renewal_count = confirmed
         heartbeat = asyncio.create_task(
             self._renew_lease(
                 claimed,
                 stop_heartbeat,
-                renewal_deadline=renewal_deadline,
-                renewal_count=renewal_count,
+                state=confirmed,
             )
         )
         processing = asyncio.create_task(self._process_claimed(claimed))
@@ -295,51 +310,72 @@ class BenchmarkWorker:
             created_at=self._clock(),
         )
 
-    def _initial_renewal_deadline(self, sample: BenchmarkSample) -> float:
-        if sample.lease_expires_at is None:
-            return time.monotonic() + self._lease_seconds
-        remaining = max(0.0, (sample.lease_expires_at - self._clock()).total_seconds())
-        return time.monotonic() + remaining
-
     async def _renew_lease(
         self,
         sample: BenchmarkSample,
         stop: asyncio.Event,
         *,
-        renewal_deadline: float,
-        renewal_count: int,
+        state: _LeaseHeartbeatState,
     ) -> None:
         interval = self._lease_seconds / 3
         while not stop.is_set():
-            remaining = renewal_deadline - time.monotonic()
+            remaining = (state.lease_expires_at - self._clock()).total_seconds()
             if remaining <= 0:
-                self._log_lease_loss(sample, renewal_count, "renewal_deadline_exceeded")
+                self._log_lease_loss(
+                    sample,
+                    state.renewal_count,
+                    "authoritative_deadline_elapsed",
+                    lease_expires_at=state.lease_expires_at,
+                    remaining_margin_seconds=remaining,
+                    seconds_since_success=time.monotonic() - state.last_success_monotonic,
+                )
                 return
             delay = min(interval, remaining / 2)
+            scheduled_for = time.monotonic() + delay
             if await self._wait_for_stop(stop, delay):
                 return
-            confirmed = await self._renew_before_deadline(
+            confirmed = await self._renew_before_expiry(
                 sample,
                 stop,
-                renewal_deadline,
-                renewal_count,
+                state.lease_expires_at,
+                state.renewal_count,
+                previous_success_monotonic=state.last_success_monotonic,
+                scheduled_for_monotonic=scheduled_for,
             )
             if confirmed is None:
                 return
-            renewal_deadline, renewal_count = confirmed
+            state = confirmed
 
-    async def _renew_before_deadline(
+    async def _renew_before_expiry(
         self,
         sample: BenchmarkSample,
         stop: asyncio.Event,
-        renewal_deadline: float,
+        lease_expires_at: datetime,
         renewal_count: int,
-    ) -> tuple[float, int] | None:
+        *,
+        previous_success_monotonic: float | None,
+        scheduled_for_monotonic: float,
+    ) -> _LeaseHeartbeatState | None:
         retry_interval = self._lease_seconds / 12
         while not stop.is_set():
-            remaining = renewal_deadline - time.monotonic()
+            request_started_monotonic = time.monotonic()
+            remaining = (lease_expires_at - self._clock()).total_seconds()
             if remaining <= 0:
-                self._log_lease_loss(sample, renewal_count, "renewal_unconfirmed_before_expiry")
+                self._log_lease_loss(
+                    sample,
+                    renewal_count,
+                    "renewal_unconfirmed_before_expiry",
+                    lease_expires_at=lease_expires_at,
+                    remaining_margin_seconds=remaining,
+                    seconds_since_success=(
+                        None
+                        if previous_success_monotonic is None
+                        else request_started_monotonic - previous_success_monotonic
+                    ),
+                    scheduling_lateness_seconds=max(
+                        0.0, request_started_monotonic - scheduled_for_monotonic
+                    ),
+                )
                 return None
             renewal_started_at = self._clock()
             try:
@@ -351,44 +387,114 @@ class BenchmarkWorker:
                         self._lease_seconds,
                     )
             except (PersistenceError, TimeoutError) as error:
+                request_finished_monotonic = time.monotonic()
                 logger.warning(
                     "benchmark lease renewal deferred run_id=%s sample_id=%s "
-                    "worker_id=%s attempt=%d renewal_count=%d error_type=%s",
+                    "worker_id=%s attempt=%d renewal_count=%d error_type=%s "
+                    "lease_expires_at=%s renewal_latency_seconds=%.6f "
+                    "remaining_margin_seconds=%.6f scheduling_lateness_seconds=%.6f",
                     sample.benchmark_run_id,
                     sample.benchmark_sample_id,
                     self.worker_id,
                     sample.attempt_count,
                     renewal_count,
                     type(error).__name__,
+                    lease_expires_at,
+                    request_finished_monotonic - request_started_monotonic,
+                    (lease_expires_at - self._clock()).total_seconds(),
+                    max(0.0, request_started_monotonic - scheduled_for_monotonic),
                 )
-                remaining = renewal_deadline - time.monotonic()
+                remaining = (lease_expires_at - self._clock()).total_seconds()
                 if remaining <= 0:
-                    self._log_lease_loss(sample, renewal_count, "renewal_unconfirmed_before_expiry")
+                    self._log_lease_loss(
+                        sample,
+                        renewal_count,
+                        "renewal_unconfirmed_before_expiry",
+                        lease_expires_at=lease_expires_at,
+                        remaining_margin_seconds=remaining,
+                        seconds_since_success=(
+                            None
+                            if previous_success_monotonic is None
+                            else request_finished_monotonic - previous_success_monotonic
+                        ),
+                        scheduling_lateness_seconds=max(
+                            0.0, request_started_monotonic - scheduled_for_monotonic
+                        ),
+                    )
                     return None
                 if await self._wait_for_stop(stop, min(retry_interval, remaining)):
                     return None
                 continue
             if not renewed:
-                self._log_lease_loss(sample, renewal_count, "repository_rejected_renewal")
+                request_finished_monotonic = time.monotonic()
+                self._log_lease_loss(
+                    sample,
+                    renewal_count,
+                    "repository_rejected_renewal",
+                    lease_expires_at=lease_expires_at,
+                    remaining_margin_seconds=(lease_expires_at - self._clock()).total_seconds(),
+                    seconds_since_success=(
+                        None
+                        if previous_success_monotonic is None
+                        else request_finished_monotonic - previous_success_monotonic
+                    ),
+                    renewal_latency_seconds=(
+                        request_finished_monotonic - request_started_monotonic
+                    ),
+                    scheduling_lateness_seconds=max(
+                        0.0, request_started_monotonic - scheduled_for_monotonic
+                    ),
+                )
                 return None
             renewal_count += 1
-            persisted_expiry = renewal_started_at + timedelta(seconds=self._lease_seconds)
-            persisted_remaining = (persisted_expiry - self._clock()).total_seconds()
+            request_finished_monotonic = time.monotonic()
+            persisted_remaining = (renewed.lease_expires_at - self._clock()).total_seconds()
             if persisted_remaining <= 0:
-                self._log_lease_loss(sample, renewal_count, "renewal_response_arrived_after_expiry")
+                self._log_lease_loss(
+                    sample,
+                    renewal_count,
+                    "renewal_response_arrived_after_expiry",
+                    lease_expires_at=renewed.lease_expires_at,
+                    remaining_margin_seconds=persisted_remaining,
+                    seconds_since_success=(
+                        None
+                        if previous_success_monotonic is None
+                        else request_finished_monotonic - previous_success_monotonic
+                    ),
+                    renewal_latency_seconds=(
+                        request_finished_monotonic - request_started_monotonic
+                    ),
+                    scheduling_lateness_seconds=max(
+                        0.0, request_started_monotonic - scheduled_for_monotonic
+                    ),
+                )
                 return None
-            renewal_deadline = time.monotonic() + persisted_remaining
             logger.debug(
                 "benchmark lease renewed run_id=%s sample_id=%s worker_id=%s "
-                "attempt=%d renewal_count=%d lease_expires_at=%s",
+                "attempt=%d renewal_count=%d renewed_at=%s lease_expires_at=%s "
+                "renewal_latency_seconds=%.6f remaining_margin_seconds=%.6f "
+                "seconds_since_success=%s scheduling_lateness_seconds=%.6f",
                 sample.benchmark_run_id,
                 sample.benchmark_sample_id,
                 self.worker_id,
                 sample.attempt_count,
                 renewal_count,
-                persisted_expiry,
+                renewed.renewed_at,
+                renewed.lease_expires_at,
+                request_finished_monotonic - request_started_monotonic,
+                persisted_remaining,
+                (
+                    "initial"
+                    if previous_success_monotonic is None
+                    else f"{request_finished_monotonic - previous_success_monotonic:.6f}"
+                ),
+                max(0.0, request_started_monotonic - scheduled_for_monotonic),
             )
-            return renewal_deadline, renewal_count
+            return _LeaseHeartbeatState(
+                lease_expires_at=renewed.lease_expires_at,
+                renewal_count=renewal_count,
+                last_success_monotonic=request_finished_monotonic,
+            )
         return None
 
     @staticmethod
@@ -399,16 +505,35 @@ class BenchmarkWorker:
             return False
         return True
 
-    def _log_lease_loss(self, sample: BenchmarkSample, renewal_count: int, reason: str) -> None:
+    def _log_lease_loss(
+        self,
+        sample: BenchmarkSample,
+        renewal_count: int,
+        reason: str,
+        *,
+        lease_expires_at: datetime | None,
+        remaining_margin_seconds: float | None = None,
+        seconds_since_success: float | None = None,
+        renewal_latency_seconds: float | None = None,
+        scheduling_lateness_seconds: float | None = None,
+    ) -> None:
         logger.warning(
             "benchmark lease ownership lost run_id=%s sample_id=%s worker_id=%s "
-            "attempt=%d renewal_count=%d reason=%s ownership_lost=true",
+            "attempt=%d renewal_count=%d reason=%s lease_expires_at=%s "
+            "remaining_margin_seconds=%s seconds_since_success=%s "
+            "renewal_latency_seconds=%s scheduling_lateness_seconds=%s "
+            "ownership_lost=true",
             sample.benchmark_run_id,
             sample.benchmark_sample_id,
             self.worker_id,
             sample.attempt_count,
             renewal_count,
             reason,
+            lease_expires_at,
+            remaining_margin_seconds,
+            seconds_since_success,
+            renewal_latency_seconds,
+            scheduling_lateness_seconds,
         )
 
 

@@ -1,9 +1,12 @@
+import asyncio
+import json
 from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.ai.models import ProviderResponse, ProviderUsage, StructuredLLMRequest
 from app.ai.providers.base import ProviderError
 from app.benchmarks.datasets import BenchmarkDatasetRegistry
 from app.benchmarks.models import (
@@ -40,6 +43,138 @@ class FakeBenchmarkQueue:
 
     async def acknowledge(self, message_id: str) -> None:
         self.acknowledged.append(message_id)
+
+
+class SerializedSlowProvider:
+    def __init__(self, source: str, delay_seconds: float) -> None:
+        self._source = source
+        self._delay_seconds = delay_seconds
+        self._semaphore = asyncio.Semaphore(1)
+        self.calls = 0
+        self.active = 0
+        self.maximum_active = 0
+
+    async def complete_structured(self, request: StructuredLLMRequest) -> ProviderResponse:
+        del request
+        async with self._semaphore:
+            self.calls += 1
+            self.active += 1
+            self.maximum_active = max(self.maximum_active, self.active)
+            try:
+                await asyncio.sleep(self._delay_seconds)
+            finally:
+                self.active -= 1
+        return ProviderResponse(
+            content=json.dumps({"language": "python", "source": self._source}),
+            response_id=f"serialized-{self.calls}",
+            usage=ProviderUsage(input_tokens=1, output_tokens=1),
+            latency_ms=int(self._delay_seconds * 1000),
+        )
+
+    async def complete_raw_source(self, request: StructuredLLMRequest) -> ProviderResponse:
+        return await self.complete_structured(request)
+
+    async def close(self) -> None: ...
+
+
+async def test_two_workers_retain_short_leases_while_sharing_provider_concurrency(
+    database_harness: DatabaseHarness,
+) -> None:
+    lease_seconds = 0.3
+    settings = Settings(
+        log_level="CRITICAL",
+        persistence_enabled=True,
+        database_url="postgresql+asyncpg://unused/test",
+        execution_backend=ExecutionBackend.LOCAL,
+        static_analysis_enabled=False,
+    )
+    tasks = TaskRegistry.default()
+    evaluations = EvaluationService(
+        EvaluationEngine(
+            registry=tasks,
+            runners={"python": create_python_runner(settings)},
+            max_code_size=settings.max_code_size,
+            analysis_engine=None,
+        ),
+        ExecutionMetadataCollector(settings),
+        database_harness.repository,
+    )
+    datasets = BenchmarkDatasetRegistry.default(tasks)
+    service = BenchmarkService(
+        database_harness.benchmark_repository,
+        datasets,
+        tasks,
+        evaluations,
+    )
+    accepted = await service.create(
+        BenchmarkCreateRequest(
+            dataset_id="codejudge-core",
+            dataset_version="1",
+            models=[
+                BenchmarkModelRequest(provider_id="serialized", model="first"),
+                BenchmarkModelRequest(provider_id="serialized", model="second"),
+            ],
+            samples_per_task=1,
+        ),
+        None,
+    )
+    rows = await database_harness.benchmark_repository.result_rows(accepted.benchmark_run_id)
+    assert len(rows) == 2
+    provider = SerializedSlowProvider(CORRECT_LRU, delay_seconds=lease_seconds * 2)
+    queue = FakeBenchmarkQueue()
+    workers = [
+        BenchmarkWorker(
+            worker_id=f"concurrent-{index}",
+            providers={"serialized": provider},
+            repository=database_harness.benchmark_repository,
+            queue=queue,
+            datasets=datasets,
+            tasks=tasks,
+            evaluations=evaluations,
+            max_code_size=settings.max_code_size,
+            lease_seconds=lease_seconds,
+            retry_base_delay_seconds=0.01,
+        )
+        for index in range(2)
+    ]
+    processing = [
+        asyncio.create_task(
+            worker.process_message(
+                BenchmarkQueueMessage(
+                    message_id=f"concurrent-message-{index}",
+                    benchmark_sample_id=row.benchmark_sample_id,
+                )
+            )
+        )
+        for index, (worker, row) in enumerate(zip(workers, rows, strict=True))
+    ]
+    recovered = 0
+    while not all(task.done() for task in processing):
+        recovered += await database_harness.benchmark_repository.recover_stale(utc_now(), 0.01)
+        await asyncio.sleep(0.02)
+    await asyncio.gather(*processing)
+
+    persisted = [
+        await database_harness.benchmark_repository.get_sample(row.benchmark_sample_id)
+        for row in rows
+    ]
+    assert recovered == 0
+    assert all(
+        sample is not None and sample.status is BenchmarkSampleStatus.COMPLETED
+        for sample in persisted
+    )
+    assert provider.calls == 2
+    assert provider.maximum_active == 1
+    assert len(queue.acknowledged) == 2
+
+    for index, (worker, row) in enumerate(zip(workers, rows, strict=True)):
+        await worker.process_message(
+            BenchmarkQueueMessage(
+                message_id=f"duplicate-message-{index}",
+                benchmark_sample_id=row.benchmark_sample_id,
+            )
+        )
+    assert provider.calls == 2
 
 
 async def test_fake_models_generate_evaluate_fail_and_rank_without_zero_imputation(

@@ -95,6 +95,12 @@ class BenchmarkResultRow:
         return None if self.artifact is None else self.artifact.currency
 
 
+@dataclass(frozen=True, slots=True)
+class BenchmarkLeaseRenewal:
+    renewed_at: datetime
+    lease_expires_at: datetime
+
+
 class BenchmarkRepository(Protocol):
     async def create_plan(
         self,
@@ -138,7 +144,7 @@ class BenchmarkRepository(Protocol):
 
     async def renew_lease(
         self, sample_id: UUID, worker_id: str, now: datetime, lease_seconds: float
-    ) -> bool: ...
+    ) -> BenchmarkLeaseRenewal | None: ...
 
     async def store_artifact(
         self, sample_id: UUID, worker_id: str, artifact: GeneratedSolutionArtifact, now: datetime
@@ -410,7 +416,7 @@ class SqlAlchemyBenchmarkRepository:
 
     async def renew_lease(
         self, sample_id: UUID, worker_id: str, now: datetime, lease_seconds: float
-    ) -> bool:
+    ) -> BenchmarkLeaseRenewal | None:
         try:
             async with self._session_factory() as session:
                 async with session.begin():
@@ -423,15 +429,19 @@ class SqlAlchemyBenchmarkRepository:
                         or record.lease_expires_at is None
                         or record.lease_expires_at <= now
                     ):
-                        return False
+                        return None
                     if BenchmarkSampleStatus(record.status) not in {
                         BenchmarkSampleStatus.GENERATING,
                         BenchmarkSampleStatus.EVALUATING,
                     }:
-                        return False
-                    record.lease_expires_at = now + timedelta(seconds=lease_seconds)
+                        return None
+                    lease_expires_at = now + timedelta(seconds=lease_seconds)
+                    record.lease_expires_at = lease_expires_at
                     record.updated_at = now
-            return True
+            return BenchmarkLeaseRenewal(
+                renewed_at=now,
+                lease_expires_at=lease_expires_at,
+            )
         except SQLAlchemyError as error:
             raise PersistenceError("Benchmark lease renewal is unavailable.") from error
 
